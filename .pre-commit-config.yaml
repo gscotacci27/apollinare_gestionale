@@ -1,0 +1,57 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+        description: Verify yaml sintax
+        args: [--allow-multiple-documents]
+
+      - id: check-json
+        description: Verify json sintax
+
+      - id: end-of-file-fixer
+        description: Make sure files end in a newline and only a newline
+        exclude: \.svg$|docs.*
+
+      - id: mixed-line-ending
+        description: Replaces with most frequent line ending
+        exclude: docs.*
+
+      - id: trailing-whitespace
+        description: Trims trailing whitespace
+        args: [--markdown-linebreak-ext=md]
+        exclude: docs.*
+
+      - id: check-added-large-files
+        description: Prevent large files from being committed
+        args: ["--maxkb=2000"]
+
+  - repo: https://github.com/editorconfig-checker/editorconfig-checker.python
+    rev: 3.2.0
+    hooks:
+      - id: editorconfig-checker
+        alias: ec
+        description: Check editorconfig compliance
+        exclude: ^dvc\.lock|\.(ipynb|svg|dvc)|conda-lock.*\.yml$
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.1
+    hooks:
+      - id: ruff
+        name: ruff-fix
+        alias: ruff-fix
+        description: Fix import sorting
+        args: [--fix, --select, I]
+
+      - id: ruff-format
+        description: Run the ruff formatter
+
+      - id: ruff
+        name: ruff-lint
+        description: Run the ruff linter
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: 'v1.15.0'
+    hooks:
+    - id: mypy
+      description: Run the type checker
