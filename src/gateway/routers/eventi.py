@@ -45,7 +45,7 @@ async def list_eventi(
         WITH dedup AS (
           SELECT *
           FROM {_table('EVENTI')}
-          QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) = 1
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY CAST(id AS INT64) ORDER BY id) = 1
         )
         SELECT e.*, l.location,
           CASE tp.tipo_pasto WHEN 'C' THEN 'Cena' WHEN 'P' THEN 'Pranzo' ELSE 'Altro' END AS tipo_pasto,
