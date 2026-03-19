@@ -22,14 +22,14 @@ async def list_eventi(
     data_a: date | None = None,
     template: bool = False,
 ):
-    conditions = ["e.deleted = 0", "e.disabled = 0"]
+    conditions = ["CAST(e.deleted AS INT64) = 0", "CAST(e.disabled AS INT64) = 0"]
     params: list = []
 
     if not template:
-        conditions.append("COALESCE(e.is_template, 0) = 0")
+        conditions.append("COALESCE(CAST(e.is_template AS INT64), 0) = 0")
 
     if stato is not None:
-        conditions.append("e.stato = @stato")
+        conditions.append("CAST(e.stato AS INT64) = @stato")
         params.append(bigquery.ScalarQueryParameter("stato", "INT64", stato))
 
     if data_da:
@@ -74,7 +74,7 @@ async def get_evento(id_evento: int):
         LEFT JOIN {_table('LOCATION')} l ON e.id_location = l.id
         LEFT JOIN {_table('TB_TIPI_EVENTO')} tp ON tp.cod_tipo = e.cod_tipo
         LEFT JOIN {_table('VW_EVENT_COLOR')} vc ON vc.id = e.id
-        WHERE e.id = @id AND e.deleted = 0
+        WHERE CAST(e.id AS INT64) = @id AND CAST(e.deleted AS INT64) = 0
     """, [bigquery.ScalarQueryParameter("id", "INT64", id_evento)])
     if not rows:
         raise HTTPException(404, f"Evento {id_evento} non trovato")
