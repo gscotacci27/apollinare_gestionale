@@ -42,11 +42,16 @@ async def list_eventi(
 
     where = " AND ".join(conditions)
     rows = await query(f"""
+        WITH dedup AS (
+          SELECT *
+          FROM {_table('EVENTI')}
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) = 1
+        )
         SELECT e.*, l.location,
           CASE tp.tipo_pasto WHEN 'C' THEN 'Cena' WHEN 'P' THEN 'Pranzo' ELSE 'Altro' END AS tipo_pasto,
           tp.descrizione AS descrizione_tipo,
           vc.color, vc.status
-        FROM {_table('EVENTI')} e
+        FROM dedup e
         LEFT JOIN {_table('LOCATION')} l ON e.id_location = l.id
         LEFT JOIN {_table('TB_TIPI_EVENTO')} tp ON tp.cod_tipo = e.cod_tipo
         LEFT JOIN {_table('VW_EVENT_COLOR')} vc ON vc.id = e.id
