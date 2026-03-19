@@ -1,0 +1,47 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'deploy/Dockerfile'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/gestionale:${SHORT_SHA}'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/gestionale:latest'
+      - '.'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/gestionale'
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'gestionale'
+      - '--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/gestionale:${SHORT_SHA}'
+      - '--region=${_REGION}'
+      - '--allow-unauthenticated'
+      - '--service-account=sa-backend@${PROJECT_ID}.iam.gserviceaccount.com'
+      - '--min-instances=0'
+      - '--max-instances=3'
+      - '--memory=512Mi'
+      - '--port=8080'
+      - '--set-env-vars=GCP_PROJECT_ID=${PROJECT_ID}'
+      - '--set-env-vars=GCP_REGION=${_REGION}'
+      - '--set-env-vars=BQ_DATASET=apollinare_legacy'
+
+substitutions:
+  _REGION: europe-west8
+  _REPOSITORY: apollinare
+
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/gestionale:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/gestionale:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  substitutionOption: ALLOW_LOOSE

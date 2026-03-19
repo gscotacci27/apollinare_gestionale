@@ -1,0 +1,57 @@
+[project]
+name = "gestionale"
+version = "0.1.0"
+description = "Gestionale operativo Apollinare Catering — eventi, lista carico, preventivi"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.3.0",
+    "google-cloud-bigquery>=3.19.0",
+    "google-auth>=2.29.0",
+    "python-json-logger>=2.0.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.14.0",
+    "httpx>=0.27.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+sources = ["src"]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "src/gateway",
+    "src/services",
+    "src/config",
+    "src/db",
+    "src/models",
+]
+
+# ── Ruff ──────────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 79
+extend-exclude = [".ipynb_checkpoints", "docs"]
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = ["D100", "D104", "ISC001"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["gateway", "services", "config", "db", "models"]
+
+# ── pytest ────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"

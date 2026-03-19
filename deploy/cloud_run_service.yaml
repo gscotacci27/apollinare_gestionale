@@ -1,0 +1,31 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: gestionale
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "3"
+    spec:
+      serviceAccountName: sa-backend@project-fac564f6-0087-4fc3-a53.iam.gserviceaccount.com
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      containers:
+        - image: europe-west8-docker.pkg.dev/project-fac564f6-0087-4fc3-a53/apollinare/gestionale:latest
+          ports:
+            - containerPort: 8080
+          resources:
+            limits:
+              memory: 512Mi
+              cpu: "1"
+          env:
+            - name: GCP_PROJECT_ID
+              value: project-fac564f6-0087-4fc3-a53
+            - name: GCP_REGION
+              value: europe-west8
+            - name: BQ_DATASET
+              value: apollinare_legacy
