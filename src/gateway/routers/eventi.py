@@ -6,6 +6,7 @@ from google.cloud import bigquery
 
 from db.bigquery import _table, dml, insert, query
 from models.evento import EventoCreate, EventoResponse, PatchEventoRequest
+from services.cache import invalidate_lista
 
 router = APIRouter(prefix="/eventi", tags=["eventi"])
 
@@ -137,10 +138,28 @@ async def create_evento(body: EventoCreate) -> dict:
 
 @router.patch("/{id_evento}", response_model=dict)
 async def patch_evento(id_evento: int, body: PatchEventoRequest) -> dict:
-    """Aggiorna parametri ospiti (tot_ospiti, perc_sedute_aper)."""
+    """Aggiorna campi evento (stato, ospiti, anagrafica)."""
     set_clauses: list[str] = []
     params: list = [bigquery.ScalarQueryParameter("id", "INT64", id_evento)]
 
+    if body.stato is not None:
+        set_clauses.append("STATO = @stato")
+        params.append(bigquery.ScalarQueryParameter("stato", "INT64", body.stato))
+    if body.descrizione is not None:
+        set_clauses.append("DESCRIZIONE = @descrizione")
+        params.append(bigquery.ScalarQueryParameter("descrizione", "STRING", body.descrizione))
+    if body.cliente is not None:
+        set_clauses.append("CLIENTE = @cliente")
+        params.append(bigquery.ScalarQueryParameter("cliente", "STRING", body.cliente))
+    if body.data is not None:
+        set_clauses.append("DATA = @data")
+        params.append(bigquery.ScalarQueryParameter("data", "STRING", body.data))
+    if body.ora_evento is not None:
+        set_clauses.append("ORA_EVENTO = @ora_evento")
+        params.append(bigquery.ScalarQueryParameter("ora_evento", "STRING", body.ora_evento))
+    if body.id_location is not None:
+        set_clauses.append("ID_LOCATION = @id_location")
+        params.append(bigquery.ScalarQueryParameter("id_location", "INT64", body.id_location))
     if body.tot_ospiti is not None:
         set_clauses.append("TOT_OSPITI = @tot_ospiti")
         params.append(bigquery.ScalarQueryParameter("tot_ospiti", "INT64", body.tot_ospiti))
@@ -158,4 +177,7 @@ async def patch_evento(id_evento: int, body: PatchEventoRequest) -> dict:
     )
     if affected == 0:
         raise HTTPException(404, f"Evento {id_evento} non trovato")
+    # Se cambiano ospiti o stato, invalida la cache della lista (ricalcola al prossimo GET)
+    if body.tot_ospiti is not None or body.perc_sedute_aper is not None or body.stato is not None:
+        invalidate_lista(id_evento)
     return {"updated": id_evento}

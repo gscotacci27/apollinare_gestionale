@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pythonjsonlogger import jsonlogger
 
 from config.settings import get_settings
+from services.cache import preload as cache_preload
 from gateway.routers.catalogo import router as catalogo_router
 from gateway.routers.eventi import router as eventi_router
 from gateway.routers.lista_carico import router as lista_router
@@ -70,3 +71,4 @@ async def _startup() -> None:
             "bq_dataset": settings.bq_dataset,
         },
     )
+    await cache_preload()

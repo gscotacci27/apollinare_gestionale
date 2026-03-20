@@ -38,6 +38,12 @@ class EventoResponse(BaseModel):
 
 
 class PatchEventoRequest(BaseModel):
+    stato: int | None = None
+    descrizione: str | None = None
+    cliente: str | None = None
+    data: str | None = None        # ISO date "YYYY-MM-DD"
+    ora_evento: str | None = None
+    id_location: int | None = None
     tot_ospiti: int | None = None
     perc_sedute_aper: float | None = None
 

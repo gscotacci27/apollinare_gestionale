@@ -58,22 +58,24 @@ async def get_ospiti(id_evento: int) -> OspitiCounts:
 
 
 def calcola_qta(articolo: dict, ospiti: OspitiCounts) -> dict[str, float]:
-    """Calcola QTA_APE, QTA_SEDU, QTA_BUFDOL in base al FLG_QTA_TYPE."""
+    """Calcola QTA_APE, QTA_SEDU, QTA_BUFDOL in base al FLG_QTA_TYPE.
+
+    Nota: il DB Oracle mostra che sia 'S' che 'C' usano COEFF × ospiti.
+    La differenza tra 'S' e 'C' non è nel calcolo ma nell'origine del coefficiente
+    (standard vs configurato). Entrambi usano COEFF_A/S/B × n_ospiti.
+    Se il coefficiente è 0 e QTA_STD è impostato si usa QTA_STD come fallback.
+    """
     flg = (articolo.get("FLG_QTA_TYPE") or "S").upper()
 
-    if flg == "S":
-        return {
-            "qta_ape":    float(articolo.get("QTA_STD_A") or 0),
-            "qta_sedu":   float(articolo.get("QTA_STD_S") or 0),
-            "qta_bufdol": float(articolo.get("QTA_STD_B") or 0),
-        }
-
-    if flg == "C":
-        return {
-            "qta_ape":    ospiti.aperitivo    * float(articolo.get("COEFF_A") or 1),
-            "qta_sedu":   ospiti.seduto       * float(articolo.get("COEFF_S") or 1),
-            "qta_bufdol": ospiti.buffet_dolci * float(articolo.get("COEFF_B") or 1),
-        }
+    if flg in ("S", "C"):
+        coeff_a = float(articolo.get("COEFF_A") or 0)
+        coeff_s = float(articolo.get("COEFF_S") or 0)
+        coeff_b = float(articolo.get("COEFF_B") or 0)
+        # Fallback a QTA_STD solo se COEFF è zero
+        qta_a = ospiti.aperitivo    * coeff_a if coeff_a else float(articolo.get("QTA_STD_A") or 0)
+        qta_s = ospiti.seduto       * coeff_s if coeff_s else float(articolo.get("QTA_STD_S") or 0)
+        qta_b = ospiti.buffet_dolci * coeff_b if coeff_b else float(articolo.get("QTA_STD_B") or 0)
+        return {"qta_ape": round(qta_a, 1), "qta_sedu": round(qta_s, 1), "qta_bufdol": round(qta_b, 1)}
 
     if flg == "P":
         perc = float(articolo.get("PERC_OSPITI") or 100) / 100.0
