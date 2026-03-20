@@ -273,6 +273,17 @@ def invalidate_lista(id_evento: int) -> None:
     _liste.pop(id_evento, None)
 
 
+def invalidate_lista_all() -> None:
+    """Invalida tutte le liste (usato quando cambiano articoli o sezioni)."""
+    _liste.clear()
+
+
+def invalidate_static() -> None:
+    """Forza il ricaricamento della cache statica al prossimo accesso."""
+    global _static
+    _static = None
+
+
 async def reload_lista(id_evento: int) -> ListaCache:
     """Scarta la cache e ricarica dal BQ (per "Annulla modifiche")."""
     async with _lock(id_evento):
