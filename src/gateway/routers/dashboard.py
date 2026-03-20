@@ -225,7 +225,7 @@ async def attivita_recenti() -> list[dict]:
           CAST(a.ID AS INT64)         AS id,
           'acconto'                   AS tipo,
           CAST(a.ID_EVENTO AS INT64)  AS id_evento,
-          CAST(a.IMPORTO AS FLOAT64)  AS importo,
+          CAST(a.ACCONTO AS FLOAT64)  AS importo,
           SUBSTR(CAST(a.DATA AS STRING), 1, 10) AS data,
           e.DESCRIZIONE               AS descrizione,
           e.CLIENTE                   AS cliente
