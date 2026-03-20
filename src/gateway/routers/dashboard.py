@@ -22,7 +22,7 @@ async def kpi() -> dict:
         WHERE COALESCE(CAST(DELETED AS INT64), 0) = 0
           AND COALESCE(CAST(IS_TEMPLATE AS INT64), 0) = 0
           AND CAST(STATO AS INT64) != 900
-          AND SAFE_CAST(DATA AS DATE) >= CURRENT_DATE()
+          AND SAFE_CAST(SUBSTR(DATA, 1, 10) AS DATE) >= CURRENT_DATE()
     """)
     liste_q = query(f"""
         SELECT COUNT(DISTINCT CAST(p.ID_EVENTO AS INT64)) AS cnt
@@ -30,7 +30,7 @@ async def kpi() -> dict:
         JOIN {_table('EVENTI')} e ON CAST(e.ID AS INT64) = CAST(p.ID_EVENTO AS INT64)
         WHERE COALESCE(CAST(e.DELETED AS INT64), 0) = 0
           AND CAST(e.STATO AS INT64) != 900
-          AND SAFE_CAST(e.DATA AS DATE) >= CURRENT_DATE()
+          AND SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) >= CURRENT_DATE()
     """)
     art_q = query(f"""
         SELECT COUNT(*) AS cnt
@@ -75,8 +75,8 @@ async def prossimi_eventi() -> list[dict]:
         WHERE COALESCE(CAST(e.DELETED AS INT64), 0) = 0
           AND COALESCE(CAST(e.IS_TEMPLATE AS INT64), 0) = 0
           AND CAST(e.STATO AS INT64) != 900
-          AND SAFE_CAST(e.DATA AS DATE) >= CURRENT_DATE()
-        ORDER BY SAFE_CAST(e.DATA AS DATE) ASC
+          AND SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) >= CURRENT_DATE()
+        ORDER BY SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) ASC
         LIMIT 5
     """)
     return rows
@@ -117,8 +117,8 @@ async def liste_aperte() -> list[dict]:
         WHERE COALESCE(CAST(e.DELETED AS INT64), 0) = 0
           AND COALESCE(CAST(e.IS_TEMPLATE AS INT64), 0) = 0
           AND CAST(e.STATO AS INT64) != 900
-          AND SAFE_CAST(e.DATA AS DATE) >= CURRENT_DATE()
-        ORDER BY SAFE_CAST(e.DATA AS DATE) ASC
+          AND SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) >= CURRENT_DATE()
+        ORDER BY SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) ASC
         LIMIT 5
     """)
     return rows
@@ -131,7 +131,7 @@ async def carico_lavoro() -> list[dict]:
     """Conteggio eventi per settimana (prossime 8 settimane), raggruppati per stato."""
     rows = await query(f"""
         SELECT
-          FORMAT_DATE('%G-W%V', SAFE_CAST(DATA AS DATE)) AS settimana,
+          FORMAT_DATE('%G-W%V', SAFE_CAST(SUBSTR(DATA, 1, 10) AS DATE)) AS settimana,
           CASE
             WHEN CAST(STATO AS INT64) = 100 THEN 'preventivo'
             WHEN CAST(STATO AS INT64) IN (200, 300, 350) THEN 'in_lavorazione'
@@ -143,8 +143,8 @@ async def carico_lavoro() -> list[dict]:
         WHERE COALESCE(CAST(DELETED AS INT64), 0) = 0
           AND COALESCE(CAST(IS_TEMPLATE AS INT64), 0) = 0
           AND CAST(STATO AS INT64) != 900
-          AND SAFE_CAST(DATA AS DATE) >= CURRENT_DATE()
-          AND SAFE_CAST(DATA AS DATE) < DATE_ADD(CURRENT_DATE(), INTERVAL 8 WEEK)
+          AND SAFE_CAST(SUBSTR(DATA, 1, 10) AS DATE) >= CURRENT_DATE()
+          AND SAFE_CAST(SUBSTR(DATA, 1, 10) AS DATE) < DATE_ADD(CURRENT_DATE(), INTERVAL 8 WEEK)
         GROUP BY settimana, stato_gruppo
         ORDER BY settimana
     """)
@@ -176,7 +176,7 @@ async def articoli_sotto_scorta() -> list[dict]:
           JOIN {_table('EVENTI')} e ON CAST(e.ID AS INT64) = CAST(p.ID_EVENTO AS INT64)
           WHERE COALESCE(CAST(e.DELETED AS INT64), 0) = 0
             AND CAST(e.STATO AS INT64) != 900
-            AND SAFE_CAST(e.DATA AS DATE) >= CURRENT_DATE()
+            AND SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) >= CURRENT_DATE()
           GROUP BY p.COD_ARTICOLO
         )
         SELECT
