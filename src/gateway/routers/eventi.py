@@ -11,25 +11,32 @@ router = APIRouter(prefix="/eventi", tags=["eventi"])
 
 
 def _base_select() -> str:
-    """CTE dedup + SELECT + JOINs. Nessuna WHERE clause — la aggiunge il caller."""
+    """CTE dedup eventi + location dedup + SELECT + JOINs.
+    Nessuna WHERE clause — la aggiunge il caller."""
     return f"""
         WITH dedup AS (
           SELECT *
           FROM {_table('EVENTI')}
           QUALIFY ROW_NUMBER() OVER (PARTITION BY CAST(ID AS INT64) ORDER BY CAST(ID AS INT64)) = 1
+        ),
+        loc_dedup AS (
+          SELECT CAST(ID AS INT64) AS id, ANY_VALUE(LOCATION) AS location
+          FROM {_table('LOCATION')}
+          WHERE ID IS NOT NULL
+          GROUP BY ID
         )
         SELECT
-          CAST(e.ID AS INT64)          AS id,
-          e.DESCRIZIONE                AS descrizione,
-          e.DATA                       AS data,
-          e.ORA_EVENTO                 AS ora_evento,
-          CAST(e.STATO AS INT64)       AS stato,
-          e.CLIENTE                    AS cliente,
-          CAST(e.ID_LOCATION AS INT64) AS id_location,
-          l.LOCATION                   AS location_nome,
-          CAST(e.TOT_OSPITI AS INT64)  AS tot_ospiti
+          CAST(e.ID AS INT64)             AS id,
+          e.DESCRIZIONE                   AS descrizione,
+          SUBSTR(e.DATA, 1, 10)           AS data,
+          e.ORA_EVENTO                    AS ora_evento,
+          CAST(e.STATO AS INT64)          AS stato,
+          e.CLIENTE                       AS cliente,
+          CAST(e.ID_LOCATION AS INT64)    AS id_location,
+          l.location                      AS location_nome,
+          CAST(e.TOT_OSPITI AS INT64)     AS tot_ospiti
         FROM dedup e
-        LEFT JOIN {_table('LOCATION')} l ON CAST(l.ID AS INT64) = CAST(e.ID_LOCATION AS INT64)
+        LEFT JOIN loc_dedup l ON l.id = CAST(e.ID_LOCATION AS INT64)
     """
 
 

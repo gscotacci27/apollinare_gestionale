@@ -11,12 +11,13 @@ router = APIRouter(prefix="/lookup", tags=["lookup"])
 
 @router.get("/location", response_model=list[LocationItem])
 async def get_location() -> list[LocationItem]:
-    # Alias sulla tabella per evitare ambiguità col nome colonna LOCATION
+    # Deduplica per ID, esclude righe senza nome location
     rows = await query(
-        f"SELECT CAST(loc.ID AS INT64) AS id, loc.LOCATION AS location "
-        f"FROM {_table('LOCATION')} loc "
-        f"WHERE loc.ID IS NOT NULL "
-        f"ORDER BY loc.LOCATION"
+        f"SELECT CAST(ID AS INT64) AS id, ANY_VALUE(LOCATION) AS location "
+        f"FROM {_table('LOCATION')} "
+        f"WHERE ID IS NOT NULL AND LOCATION IS NOT NULL "
+        f"GROUP BY ID "
+        f"ORDER BY location"
     )
     return [LocationItem(**r) for r in rows]
 
