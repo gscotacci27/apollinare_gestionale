@@ -19,6 +19,7 @@ from pythonjsonlogger import jsonlogger
 from config.settings import get_settings
 from services.cache import preload as cache_preload
 from gateway.routers.catalogo import router as catalogo_router
+from gateway.routers.dashboard import router as dashboard_router
 from gateway.routers.eventi import router as eventi_router
 from gateway.routers.lista_carico import router as lista_router
 from gateway.routers.lookup import router as lookup_router
@@ -49,6 +50,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(dashboard_router)
 app.include_router(eventi_router)
 app.include_router(lookup_router)
 app.include_router(lista_router)
