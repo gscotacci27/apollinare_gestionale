@@ -58,6 +58,9 @@ class AddArticoloRequest(BaseModel):
 
 
 class UpdateListaItemRequest(BaseModel):
+    qta_ape: float | None = None       # None = non modificare (mantieni calcolato)
+    qta_sedu: float | None = None
+    qta_bufdol: float | None = None
     qta_man_ape: float = 0
     qta_man_sedu: float = 0
     qta_man_bufdol: float = 0

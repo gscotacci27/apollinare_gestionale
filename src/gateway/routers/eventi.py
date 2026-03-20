@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from google.cloud import bigquery
 
 from db.bigquery import _table, dml, insert, query
-from models.evento import EventoCreate, EventoResponse
+from models.evento import EventoCreate, EventoResponse, PatchEventoRequest
 
 router = APIRouter(prefix="/eventi", tags=["eventi"])
 
@@ -34,7 +34,8 @@ def _base_select() -> str:
           e.CLIENTE                       AS cliente,
           CAST(e.ID_LOCATION AS INT64)    AS id_location,
           l.location                      AS location_nome,
-          CAST(e.TOT_OSPITI AS INT64)     AS tot_ospiti
+          CAST(e.TOT_OSPITI AS INT64)           AS tot_ospiti,
+          CAST(e.PERC_SEDUTE_APER AS FLOAT64)   AS perc_sedute_aper
         FROM dedup e
         LEFT JOIN loc_dedup l ON l.id = CAST(e.ID_LOCATION AS INT64)
     """
@@ -59,6 +60,7 @@ async def list_eventi(
     ),
     data_da: str | None = Query(None, description="Data inizio filtro (YYYY-MM-DD)"),
     data_a: str | None = Query(None, description="Data fine filtro (YYYY-MM-DD)"),
+    id_location: int | None = Query(None, description="Filtra per location"),
 ) -> list[EventoResponse]:
     conditions = _base_conditions()
     params: list = []
@@ -78,6 +80,10 @@ async def list_eventi(
     if data_a:
         conditions.append("SAFE_CAST(e.DATA AS DATE) <= @data_a")
         params.append(bigquery.ScalarQueryParameter("data_a", "DATE", data_a))
+
+    if id_location is not None:
+        conditions.append("CAST(e.ID_LOCATION AS INT64) = @id_location")
+        params.append(bigquery.ScalarQueryParameter("id_location", "INT64", id_location))
 
     where = "WHERE " + " AND ".join(conditions)
     sql = _base_select() + where + "\nORDER BY SAFE_CAST(e.DATA AS DATE) ASC"
@@ -125,3 +131,31 @@ async def create_evento(body: EventoCreate) -> dict:
         "CONTRATTO_FIRMATO": 0,
     })
     return {"id": new_id}
+
+
+# ── PATCH ─────────────────────────────────────────────────────────────────────
+
+@router.patch("/{id_evento}", response_model=dict)
+async def patch_evento(id_evento: int, body: PatchEventoRequest) -> dict:
+    """Aggiorna parametri ospiti (tot_ospiti, perc_sedute_aper)."""
+    set_clauses: list[str] = []
+    params: list = [bigquery.ScalarQueryParameter("id", "INT64", id_evento)]
+
+    if body.tot_ospiti is not None:
+        set_clauses.append("TOT_OSPITI = @tot_ospiti")
+        params.append(bigquery.ScalarQueryParameter("tot_ospiti", "INT64", body.tot_ospiti))
+    if body.perc_sedute_aper is not None:
+        set_clauses.append("PERC_SEDUTE_APER = @perc_sedute_aper")
+        params.append(bigquery.ScalarQueryParameter("perc_sedute_aper", "FLOAT64", body.perc_sedute_aper))
+
+    if not set_clauses:
+        return {"updated": 0}
+
+    affected = await dml(
+        f"UPDATE {_table('EVENTI')} SET {', '.join(set_clauses)} "
+        f"WHERE CAST(ID AS INT64) = @id",
+        params,
+    )
+    if affected == 0:
+        raise HTTPException(404, f"Evento {id_evento} non trovato")
+    return {"updated": id_evento}

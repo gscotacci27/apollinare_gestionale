@@ -120,22 +120,37 @@ async def add_articolo(id_evento: int, body: AddArticoloRequest) -> ListaCaricaI
 async def update_articolo(
     id_evento: int, item_id: int, body: UpdateListaItemRequest
 ) -> dict:
-    affected = await dml(f"""
-        UPDATE {_table('EVENTI_DET_PREL')}
-        SET QTA_MAN_APE    = @qma,
-            QTA_MAN_SEDU   = @qms,
-            QTA_MAN_BUFDOL = @qmb,
-            NOTE           = @note
-        WHERE CAST(ID_EVENTO AS INT64) = @id_evento
-          AND CAST(ID AS INT64)        = @item_id
-    """, [
+    set_parts = [
+        "QTA_MAN_APE    = @qma",
+        "QTA_MAN_SEDU   = @qms",
+        "QTA_MAN_BUFDOL = @qmb",
+        "NOTE           = @note",
+    ]
+    params = [
         bigquery.ScalarQueryParameter("qma",       "FLOAT64", body.qta_man_ape),
         bigquery.ScalarQueryParameter("qms",       "FLOAT64", body.qta_man_sedu),
         bigquery.ScalarQueryParameter("qmb",       "FLOAT64", body.qta_man_bufdol),
         bigquery.ScalarQueryParameter("note",      "STRING",  body.note or ""),
         bigquery.ScalarQueryParameter("id_evento", "INT64",   id_evento),
         bigquery.ScalarQueryParameter("item_id",   "INT64",   item_id),
-    ])
+    ]
+    # Sovrascrittura quantità base solo se esplicitamente passate
+    if body.qta_ape is not None:
+        set_parts.append("QTA_APE = @qa")
+        params.append(bigquery.ScalarQueryParameter("qa", "FLOAT64", body.qta_ape))
+    if body.qta_sedu is not None:
+        set_parts.append("QTA_SEDU = @qs")
+        params.append(bigquery.ScalarQueryParameter("qs", "FLOAT64", body.qta_sedu))
+    if body.qta_bufdol is not None:
+        set_parts.append("QTA_BUFDOL = @qb")
+        params.append(bigquery.ScalarQueryParameter("qb", "FLOAT64", body.qta_bufdol))
+
+    affected = await dml(f"""
+        UPDATE {_table('EVENTI_DET_PREL')}
+        SET {', '.join(set_parts)}
+        WHERE CAST(ID_EVENTO AS INT64) = @id_evento
+          AND CAST(ID AS INT64)        = @item_id
+    """, params)
     if affected == 0:
         raise HTTPException(404, "Riga lista non trovata")
     return {"updated": item_id}

@@ -32,8 +32,14 @@ class EventoResponse(BaseModel):
     id_location: int | None
     location_nome: str | None     # da JOIN con LOCATION
     tot_ospiti: int | None
+    perc_sedute_aper: float | None = None   # % ospiti in piedi (aperitivo)
 
     model_config = {"from_attributes": True}
+
+
+class PatchEventoRequest(BaseModel):
+    tot_ospiti: int | None = None
+    perc_sedute_aper: float | None = None
 
 
 class LocationItem(BaseModel):

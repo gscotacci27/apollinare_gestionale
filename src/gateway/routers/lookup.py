@@ -12,7 +12,7 @@ router = APIRouter(prefix="/lookup", tags=["lookup"])
 
 # Sezioni amministrative/non operative da escludere dalla lista di carico
 _SEZIONI_ESCLUSE = (
-    "'ELIM','MENU','FEE','LOC','PRELO','CONTAPO','FORNITORI',"
+    "'ELIM','FEE','LOC','PRELO','CONTAPO','FORNITORI',"
     "'DEGUS','OS','IP','ALLEG','PRS','VARIE'"
 )
 
