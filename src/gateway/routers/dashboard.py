@@ -165,8 +165,28 @@ async def carico_lavoro() -> list[dict]:
 # ── ARTICOLI SOTTO SCORTA ──────────────────────────────────────────────────────
 
 @router.get("/articoli-sotto-scorta")
-async def articoli_sotto_scorta() -> list[dict]:
-    """Articoli impegnati >50% della giacenza (esclusi illimitati QTA_GIAC=9999)."""
+async def articoli_sotto_scorta(
+    giorni: int | None = None,
+    data: str | None = None,
+) -> list[dict]:
+    """Articoli impegnati >50% della giacenza.
+
+    - `data` (YYYY-MM-DD): filtra solo gli eventi di quel giorno.
+    - `giorni` (int): finestra in giorni da oggi (default 30).
+    """
+    from fastapi import Query as Q
+
+    if data:
+        date_filter = "SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) = @data_filter"
+        params = [bigquery.ScalarQueryParameter("data_filter", "DATE", data)]
+    else:
+        n = giorni if giorni and giorni > 0 else 30
+        date_filter = (
+            "SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) >= CURRENT_DATE() "
+            "AND SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) < DATE_ADD(CURRENT_DATE(), INTERVAL @giorni DAY)"
+        )
+        params = [bigquery.ScalarQueryParameter("giorni", "INT64", n)]
+
     rows = await query(f"""
         WITH impegni AS (
           SELECT
@@ -176,14 +196,14 @@ async def articoli_sotto_scorta() -> list[dict]:
           JOIN {_table('EVENTI')} e ON CAST(e.ID AS INT64) = CAST(p.ID_EVENTO AS INT64)
           WHERE COALESCE(CAST(e.DELETED AS INT64), 0) = 0
             AND CAST(e.STATO AS INT64) != 900
-            AND SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) >= CURRENT_DATE()
+            AND {date_filter}
           GROUP BY p.COD_ARTICOLO
         )
         SELECT
-          a.COD_ARTICOLO      AS cod_articolo,
-          a.DESCRIZIONE       AS descrizione,
-          CAST(a.QTA_GIAC AS FLOAT64)  AS qta_giac,
-          COALESCE(i.qta_impegnata, 0) AS qta_impegnata,
+          a.COD_ARTICOLO                                AS cod_articolo,
+          a.DESCRIZIONE                                 AS descrizione,
+          CAST(a.QTA_GIAC AS FLOAT64)                   AS qta_giac,
+          COALESCE(i.qta_impegnata, 0)                  AS qta_impegnata,
           ROUND(COALESCE(i.qta_impegnata, 0) / CAST(a.QTA_GIAC AS FLOAT64) * 100, 1) AS perc_impegnata
         FROM {_table('ARTICOLI')} a
         LEFT JOIN impegni i ON i.COD_ARTICOLO = a.COD_ARTICOLO
@@ -192,7 +212,7 @@ async def articoli_sotto_scorta() -> list[dict]:
           AND COALESCE(i.qta_impegnata, 0) / CAST(a.QTA_GIAC AS FLOAT64) > 0.5
         ORDER BY perc_impegnata DESC
         LIMIT 20
-    """)
+    """, params)
     return rows
 
 
