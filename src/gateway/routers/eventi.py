@@ -9,18 +9,14 @@ from models.evento import EventoCreate, EventoResponse
 
 router = APIRouter(prefix="/eventi", tags=["eventi"])
 
-# Stati "in lavorazione" — include legacy 300 e 350
-_STATI_IN_LAVORAZIONE = (200, 300, 350)
-
 
 def _base_select() -> str:
+    """CTE dedup + SELECT + JOINs. Nessuna WHERE clause — la aggiunge il caller."""
     return f"""
         WITH dedup AS (
           SELECT *
           FROM {_table('EVENTI')}
-          WHERE COALESCE(CAST(DELETED AS INT64), 0) = 0
-            AND COALESCE(CAST(IS_TEMPLATE AS INT64), 0) = 0
-          QUALIFY ROW_NUMBER() OVER (PARTITION BY CAST(ID AS INT64) ORDER BY ID) = 1
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY CAST(ID AS INT64) ORDER BY CAST(ID AS INT64)) = 1
         )
         SELECT
           CAST(e.ID AS INT64)          AS id,
@@ -37,6 +33,14 @@ def _base_select() -> str:
     """
 
 
+def _base_conditions() -> list[str]:
+    """Condizioni di base comuni: escludi cancellati e template."""
+    return [
+        "COALESCE(CAST(e.DELETED AS INT64), 0) = 0",
+        "COALESCE(CAST(e.IS_TEMPLATE AS INT64), 0) = 0",
+    ]
+
+
 # ── LIST ──────────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[EventoResponse])
@@ -49,14 +53,12 @@ async def list_eventi(
     data_da: str | None = Query(None, description="Data inizio filtro (YYYY-MM-DD)"),
     data_a: str | None = Query(None, description="Data fine filtro (YYYY-MM-DD)"),
 ) -> list[EventoResponse]:
-    conditions: list[str] = []
+    conditions = _base_conditions()
     params: list = []
 
     if stato is None:
-        # default: escludi annullati
         conditions.append("CAST(e.STATO AS INT64) != 900")
     elif stato == 200:
-        # "In lavorazione" raggruppa anche i legacy 300/350
         conditions.append("CAST(e.STATO AS INT64) IN (200, 300, 350)")
     else:
         conditions.append("CAST(e.STATO AS INT64) = @stato")
@@ -70,7 +72,7 @@ async def list_eventi(
         conditions.append("SAFE_CAST(e.DATA AS DATE) <= @data_a")
         params.append(bigquery.ScalarQueryParameter("data_a", "DATE", data_a))
 
-    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    where = "WHERE " + " AND ".join(conditions)
     sql = _base_select() + where + "\nORDER BY SAFE_CAST(e.DATA AS DATE) ASC"
 
     rows = await query(sql, params)
@@ -81,8 +83,10 @@ async def list_eventi(
 
 @router.get("/{id_evento}", response_model=EventoResponse)
 async def get_evento(id_evento: int) -> EventoResponse:
+    conditions = _base_conditions() + ["CAST(e.ID AS INT64) = @id"]
+    where = "WHERE " + " AND ".join(conditions)
     rows = await query(
-        _base_select() + " WHERE CAST(e.ID AS INT64) = @id",
+        _base_select() + where,
         [bigquery.ScalarQueryParameter("id", "INT64", id_evento)],
     )
     if not rows:
@@ -94,7 +98,6 @@ async def get_evento(id_evento: int) -> EventoResponse:
 
 @router.post("", response_model=dict, status_code=201)
 async def create_evento(body: EventoCreate) -> dict:
-    # Genera ID (MAX+1). Accettabile per tool interno a bassa concorrenza.
     id_rows = await query(f"SELECT COALESCE(MAX(CAST(ID AS INT64)), 0) + 1 AS next_id FROM {_table('EVENTI')}")
     new_id = int(id_rows[0]["next_id"])
 
