@@ -18,8 +18,22 @@ from services.calcolo_lista import (
 router = APIRouter(prefix="/eventi/{id_evento}/lista", tags=["lista-carico"])
 
 
+async def _check_confermato(id_evento: int) -> None:
+    """Verifica che l'evento sia in stato Confermato (400). Altrimenti 403."""
+    rows = await query(
+        f"SELECT CAST(STATO AS INT64) AS stato FROM {_table('EVENTI')} "
+        f"WHERE CAST(ID AS INT64) = @id LIMIT 1",
+        [bigquery.ScalarQueryParameter("id", "INT64", id_evento)],
+    )
+    if not rows:
+        raise HTTPException(404, f"Evento {id_evento} non trovato")
+    if int(rows[0]["stato"] or 0) != 400:
+        raise HTTPException(403, "La lista di carico è accessibile solo per eventi confermati")
+
+
 @router.get("", response_model=list[ListaCaricaItem])
 async def get_lista(id_evento: int) -> list[ListaCaricaItem]:
+    await _check_confermato(id_evento)
     rows = await query(f"""
         WITH dedup AS (
             SELECT *
@@ -60,6 +74,8 @@ async def get_lista(id_evento: int) -> list[ListaCaricaItem]:
             COALESCE(CAST(d.QTA_MAN_SEDU AS FLOAT64), 0)     AS qta_man_sedu,
             COALESCE(CAST(d.QTA_MAN_BUFDOL AS FLOAT64), 0)   AS qta_man_bufdol,
             d.NOTE                                           AS note,
+            d.COLORE                                         AS colore,
+            d.DIMENSIONI                                     AS dimensioni,
             CAST(COALESCE(d.ORDINE, 0) AS INT64)             AS ordine,
             c.COD_TIPO                                       AS cod_tipo,
             t.DESCRIZIONE                                    AS tipo_descrizione,
@@ -75,6 +91,7 @@ async def get_lista(id_evento: int) -> list[ListaCaricaItem]:
 
 @router.post("", response_model=ListaCaricaItem, status_code=201)
 async def add_articolo(id_evento: int, body: AddArticoloRequest) -> ListaCaricaItem:
+    await _check_confermato(id_evento)
     articolo = await fetch_articolo(body.cod_articolo)
     if not articolo:
         raise HTTPException(404, f"Articolo '{body.cod_articolo}' non trovato")
@@ -125,14 +142,18 @@ async def update_articolo(
         "QTA_MAN_SEDU   = @qms",
         "QTA_MAN_BUFDOL = @qmb",
         "NOTE           = @note",
+        "COLORE         = @colore",
+        "DIMENSIONI     = @dimensioni",
     ]
     params = [
-        bigquery.ScalarQueryParameter("qma",       "FLOAT64", body.qta_man_ape),
-        bigquery.ScalarQueryParameter("qms",       "FLOAT64", body.qta_man_sedu),
-        bigquery.ScalarQueryParameter("qmb",       "FLOAT64", body.qta_man_bufdol),
-        bigquery.ScalarQueryParameter("note",      "STRING",  body.note or ""),
-        bigquery.ScalarQueryParameter("id_evento", "INT64",   id_evento),
-        bigquery.ScalarQueryParameter("item_id",   "INT64",   item_id),
+        bigquery.ScalarQueryParameter("qma",        "FLOAT64", body.qta_man_ape),
+        bigquery.ScalarQueryParameter("qms",        "FLOAT64", body.qta_man_sedu),
+        bigquery.ScalarQueryParameter("qmb",        "FLOAT64", body.qta_man_bufdol),
+        bigquery.ScalarQueryParameter("note",       "STRING",  body.note or ""),
+        bigquery.ScalarQueryParameter("colore",     "STRING",  body.colore or ""),
+        bigquery.ScalarQueryParameter("dimensioni", "STRING",  body.dimensioni or ""),
+        bigquery.ScalarQueryParameter("id_evento",  "INT64",   id_evento),
+        bigquery.ScalarQueryParameter("item_id",    "INT64",   item_id),
     ]
     # Sovrascrittura quantità base solo se esplicitamente passate
     if body.qta_ape is not None:
@@ -158,6 +179,7 @@ async def update_articolo(
 
 @router.delete("/{item_id}", response_model=dict)
 async def remove_articolo(id_evento: int, item_id: int) -> dict:
+    await _check_confermato(id_evento)
     affected = await dml(f"""
         DELETE FROM {_table('EVENTI_DET_PREL')}
         WHERE CAST(ID_EVENTO AS INT64) = @id_evento

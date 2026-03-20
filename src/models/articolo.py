@@ -65,3 +65,5 @@ class UpdateListaItemRequest(BaseModel):
     qta_man_sedu: float = 0
     qta_man_bufdol: float = 0
     note: str | None = None
+    colore: str | None = None
+    dimensioni: str | None = None

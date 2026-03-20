@@ -66,6 +66,8 @@ class ListaCaricaItem(BaseModel):
     qta_man_bufdol: float = 0
     note: str | None = None
     ordine: int = 0
+    colore: str | None = None
+    dimensioni: str | None = None
     # Sezione merceologica (da TB_TIPI_MAT via TB_CODICI_CATEG)
     cod_tipo: str | None = None
     tipo_descrizione: str | None = None
