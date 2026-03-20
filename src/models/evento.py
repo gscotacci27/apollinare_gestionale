@@ -61,6 +61,7 @@ class ListaCaricaItem(BaseModel):
     note: str | None = None
     ordine: int = 0
     # Sezione merceologica (da TB_TIPI_MAT via TB_CODICI_CATEG)
+    cod_tipo: str | None = None
     tipo_descrizione: str | None = None
     cod_step: int = 999
 

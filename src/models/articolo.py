@@ -35,10 +35,18 @@ class TipoMateriale(BaseModel):
     descrizione: str | None = None
 
 
+class SezioneItem(BaseModel):
+    cod_tipo: str
+    descrizione: str
+    cod_step: int
+
+
 class ArticoloLookupItem(BaseModel):
     cod_articolo: str
     descrizione: str | None = None
     qta_giac: float | None = None
+    cod_tipo: str | None = None
+    rank: float | None = None
 
 
 class AddArticoloRequest(BaseModel):

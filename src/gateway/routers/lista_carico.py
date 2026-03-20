@@ -61,6 +61,7 @@ async def get_lista(id_evento: int) -> list[ListaCaricaItem]:
             COALESCE(CAST(d.QTA_MAN_BUFDOL AS FLOAT64), 0)   AS qta_man_bufdol,
             d.NOTE                                           AS note,
             CAST(COALESCE(d.ORDINE, 0) AS INT64)             AS ordine,
+            c.COD_TIPO                                       AS cod_tipo,
             t.DESCRIZIONE                                    AS tipo_descrizione,
             COALESCE(t.COD_STEP, 999)                        AS cod_step
         FROM dedup d
