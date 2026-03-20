@@ -35,9 +35,21 @@ class TipoMateriale(BaseModel):
     descrizione: str | None = None
 
 
+class ArticoloLookupItem(BaseModel):
+    cod_articolo: str
+    descrizione: str | None = None
+    qta_giac: float | None = None
+
+
 class AddArticoloRequest(BaseModel):
     cod_articolo: str
-    # Quantità manuali (override rispetto al calcolo automatico)
+    qta_man_ape: float = 0
+    qta_man_sedu: float = 0
+    qta_man_bufdol: float = 0
+    note: str | None = None
+
+
+class UpdateListaItemRequest(BaseModel):
     qta_man_ape: float = 0
     qta_man_sedu: float = 0
     qta_man_bufdol: float = 0
