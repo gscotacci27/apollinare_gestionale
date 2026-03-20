@@ -77,9 +77,11 @@ def calcola_qta(articolo: dict[str, Any], ospiti: OspitiCounts) -> dict[str, flo
 
 @dataclass
 class StaticCache:
-    articoli: dict[str, dict]    # COD_ARTICOLO → row
-    cod_categ: dict[str, str]    # COD_CATEG → COD_TIPO
-    tipi_mat: dict[str, dict]    # COD_TIPO → {descrizione, cod_step}
+    articoli: dict[str, dict]          # COD_ARTICOLO → row
+    cod_categ: dict[str, str]          # COD_CATEG → COD_TIPO
+    tipi_mat: dict[str, dict]          # COD_TIPO → {descrizione, cod_step}
+    tipi_ospiti: dict[str, str]        # COD_TIPO → DESCRIZIONE
+    costi_articoli: dict[str, float]   # COD_ARTICOLO → COSTO_UNI
     loaded_at: datetime = field(default_factory=datetime.utcnow)
 
     def is_stale(self) -> bool:
@@ -124,7 +126,7 @@ async def preload() -> None:
 
 
 async def _load_static() -> StaticCache:
-    art_rows, categ_rows, tipo_rows = await asyncio.gather(
+    art_rows, categ_rows, tipo_rows, tipi_ospiti_rows, costi_rows = await asyncio.gather(
         query(f"""
             SELECT * FROM {_table('ARTICOLI')}
             QUALIFY ROW_NUMBER() OVER (PARTITION BY COD_ARTICOLO ORDER BY COD_ARTICOLO) = 1
@@ -141,6 +143,15 @@ async def _load_static() -> StaticCache:
             FROM {_table('TB_TIPI_MAT')}
             GROUP BY COD_TIPO
         """),
+        query(f"""
+            SELECT COD_TIPO, ANY_VALUE(DESCRIZIONE) AS DESCRIZIONE
+            FROM {_table('TB_TIPI_OSPITI')}
+            GROUP BY COD_TIPO
+        """),
+        query(f"""
+            SELECT COD_ARTICOLO, CAST(COSTO_UNI AS FLOAT64) AS COSTO_UNI
+            FROM {_table('GET_ULTIMI_COSTI')}
+        """),
     )
     return StaticCache(
         articoli={str(r["COD_ARTICOLO"]): dict(r) for r in art_rows},
@@ -152,6 +163,8 @@ async def _load_static() -> StaticCache:
             }
             for r in tipo_rows
         },
+        tipi_ospiti={str(r["COD_TIPO"]): str(r["DESCRIZIONE"] or "") for r in tipi_ospiti_rows},
+        costi_articoli={str(r["COD_ARTICOLO"]): float(r["COSTO_UNI"] or 0) for r in costi_rows},
     )
 
 
@@ -397,3 +410,336 @@ async def _load_lista_from_bq(id_evento: int) -> ListaCache:
         ))
 
     return ListaCache(id_evento=id_evento, items=items, _next_ordine=next_ordine)
+
+
+# ── Scheda evento cache ────────────────────────────────────────────────────────
+
+@dataclass
+class OspiteCached:
+    cod_tipo: str
+    descrizione: str | None
+    numero: int
+    costo: float
+    sconto: float
+    note: str | None
+    ordine: int
+
+
+@dataclass
+class ExtraCached:
+    id: int
+    descrizione: str
+    costo: float
+    quantity: float
+    ordine: int
+    is_new: bool = False
+
+
+@dataclass
+class AccontoCached:
+    id: int
+    acconto: float
+    data: str | None          # ISO date
+    a_conferma: int
+    descrizione: str | None
+    ordine: int
+    is_new: bool = False
+
+
+@dataclass
+class SchedaCache:
+    id_evento: int
+    ospiti: list[OspiteCached]
+    extra: list[ExtraCached]
+    acconti: list[AccontoCached]
+    _next_extra_id: int = field(default=-1)
+    _next_acconto_id: int = field(default=-1)
+    _next_extra_ordine: int = field(default=10)
+    _next_acconto_ordine: int = field(default=10)
+    dirty: bool = False
+
+    def next_extra_id(self) -> int:
+        v = self._next_extra_id
+        self._next_extra_id -= 1
+        return v
+
+    def next_acconto_id(self) -> int:
+        v = self._next_acconto_id
+        self._next_acconto_id -= 1
+        return v
+
+    def next_extra_ordine(self) -> int:
+        v = self._next_extra_ordine
+        self._next_extra_ordine += 10
+        return v
+
+    def next_acconto_ordine(self) -> int:
+        v = self._next_acconto_ordine
+        self._next_acconto_ordine += 10
+        return v
+
+
+_schede: dict[int, SchedaCache] = {}
+_schede_locks: dict[int, asyncio.Lock] = {}
+
+
+def _scheda_lock(id_evento: int) -> asyncio.Lock:
+    if id_evento not in _schede_locks:
+        _schede_locks[id_evento] = asyncio.Lock()
+    return _schede_locks[id_evento]
+
+
+async def get_scheda_cache(id_evento: int) -> SchedaCache:
+    async with _scheda_lock(id_evento):
+        if id_evento not in _schede:
+            _schede[id_evento] = await _load_scheda_from_bq(id_evento)
+    return _schede[id_evento]
+
+
+def invalidate_scheda(id_evento: int) -> None:
+    """Forza il ricaricamento dal BQ al prossimo accesso."""
+    _schede.pop(id_evento, None)
+
+
+async def reload_scheda(id_evento: int) -> SchedaCache:
+    """Scarta la cache e ricarica dal BQ."""
+    async with _scheda_lock(id_evento):
+        _schede[id_evento] = await _load_scheda_from_bq(id_evento)
+    return _schede[id_evento]
+
+
+async def save_scheda_to_bq(id_evento: int) -> bool:
+    """DELETE+INSERT su BQ per tutte e tre le tabelle della scheda."""
+    scheda = _schede.get(id_evento)
+    if scheda is None:
+        return False
+
+    async with _scheda_lock(id_evento):
+        param = [bigquery.ScalarQueryParameter("id", "INT64", id_evento)]
+
+        # ── EVENTI_DET_OSPITI ──────────────────────────────────────────────────
+        await dml(
+            f"DELETE FROM {_table('EVENTI_DET_OSPITI')} WHERE CAST(ID_EVENTO AS INT64) = @id",
+            param,
+        )
+        ospiti_rows = [
+            {
+                "ID_EVENTO":      id_evento,
+                "COD_TIPO_OSPITE": o.cod_tipo,
+                "NUMERO":         o.numero,
+                "NOTE":           o.note or "",
+                "COSTO":          o.costo,
+                "SCONTO":         o.sconto,
+                "ORDINE":         o.ordine,
+            }
+            for o in scheda.ospiti
+        ]
+        if ospiti_rows:
+            await insert_many("EVENTI_DET_OSPITI", ospiti_rows)
+
+        # ── EVENTI_ALTRICOSTI ──────────────────────────────────────────────────
+        # Assign real IDs to new extras
+        if any(e.is_new for e in scheda.extra):
+            id_rows = await query(
+                f"SELECT COALESCE(MAX(CAST(ID AS INT64)), 0) AS max_id FROM {_table('EVENTI_ALTRICOSTI')}"
+            )
+            next_id = int(id_rows[0]["max_id"]) + 1
+            for e in scheda.extra:
+                if e.is_new:
+                    e.id = next_id
+                    e.is_new = False
+                    next_id += 1
+
+        await dml(
+            f"DELETE FROM {_table('EVENTI_ALTRICOSTI')} WHERE CAST(ID_EVENTO AS INT64) = @id",
+            param,
+        )
+        extra_rows = [
+            {
+                "ID":          e.id,
+                "ID_EVENTO":   id_evento,
+                "DESCRIZIONE": e.descrizione,
+                "COSTO":       e.costo,
+                "QUANTITY":    e.quantity,
+                "ORDINE":      e.ordine,
+            }
+            for e in scheda.extra
+        ]
+        if extra_rows:
+            await insert_many("EVENTI_ALTRICOSTI", extra_rows)
+
+        # ── EVENTI_ACCONTI ─────────────────────────────────────────────────────
+        if any(a.is_new for a in scheda.acconti):
+            id_rows = await query(
+                f"SELECT COALESCE(MAX(CAST(ID AS INT64)), 0) AS max_id FROM {_table('EVENTI_ACCONTI')}"
+            )
+            next_id = int(id_rows[0]["max_id"]) + 1
+            for a in scheda.acconti:
+                if a.is_new:
+                    a.id = next_id
+                    a.is_new = False
+                    next_id += 1
+
+        await dml(
+            f"DELETE FROM {_table('EVENTI_ACCONTI')} WHERE CAST(ID_EVENTO AS INT64) = @id",
+            param,
+        )
+        acconti_rows = [
+            {
+                "ID":          a.id,
+                "DATA":        a.data or None,
+                "ACCONTO":     a.acconto,
+                "ID_EVENTO":   id_evento,
+                "A_CONFERMA":  a.a_conferma,
+                "ORDINE":      a.ordine,
+                "DESCRIZIONE": a.descrizione or "",
+            }
+            for a in scheda.acconti
+        ]
+        if acconti_rows:
+            await insert_many("EVENTI_ACCONTI", acconti_rows)
+
+        scheda.dirty = False
+        logger.info("Scheda salvata su BQ", extra={"id_evento": id_evento})
+        return True
+
+
+def calcola_preventivo(
+    scheda: SchedaCache,
+    lista: "ListaCache | None",
+    static: StaticCache,
+) -> dict:
+    """Calcola il preventivo in puro Python."""
+    # Subtotale ospiti: somma (numero × costo × (1 - sconto/100))
+    ospiti_subtotale = sum(
+        o.numero * o.costo * (1.0 - o.sconto / 100.0)
+        for o in scheda.ospiti
+    )
+
+    # Subtotale articoli: costo_uni × (qta_ape + qta_sedu + qta_bufdol + qta_man_*)
+    articoli_subtotale = 0.0
+    if lista is not None:
+        for item in lista.items:
+            costo_uni = static.costi_articoli.get(item.cod_articolo, 0.0)
+            qta = (
+                item.qta_ape + item.qta_sedu + item.qta_bufdol
+                + item.qta_man_ape + item.qta_man_sedu + item.qta_man_bufdol
+            )
+            articoli_subtotale += costo_uni * qta
+
+    # Subtotale extra
+    extra_subtotale = sum(e.costo * e.quantity for e in scheda.extra)
+
+    totale_netto = ospiti_subtotale + articoli_subtotale + extra_subtotale
+    acconti_totale = sum(a.acconto for a in scheda.acconti)
+    saldo = totale_netto - acconti_totale
+
+    return {
+        "ospiti_subtotale":    round(ospiti_subtotale, 2),
+        "articoli_subtotale":  round(articoli_subtotale, 2),
+        "extra_subtotale":     round(extra_subtotale, 2),
+        "totale_netto":        round(totale_netto, 2),
+        "acconti_totale":      round(acconti_totale, 2),
+        "saldo":               round(saldo, 2),
+    }
+
+
+async def _load_scheda_from_bq(id_evento: int) -> SchedaCache:
+    """Carica ospiti, extra e acconti da BQ per un evento."""
+    static = await get_static()
+    param = [bigquery.ScalarQueryParameter("id", "INT64", id_evento)]
+
+    ospiti_rows, extra_rows, acconti_rows, max_extra_id_rows, max_acc_id_rows = await asyncio.gather(
+        query(f"""
+            SELECT COD_TIPO_OSPITE, CAST(NUMERO AS INT64) AS NUMERO,
+                   CAST(COSTO AS FLOAT64) AS COSTO, CAST(SCONTO AS FLOAT64) AS SCONTO,
+                   NOTE, CAST(ORDINE AS INT64) AS ORDINE
+            FROM {_table('EVENTI_DET_OSPITI')}
+            WHERE CAST(ID_EVENTO AS INT64) = @id
+        """, param),
+        query(f"""
+            SELECT CAST(ID AS INT64) AS ID, DESCRIZIONE,
+                   CAST(COSTO AS FLOAT64) AS COSTO, CAST(QUANTITY AS FLOAT64) AS QUANTITY,
+                   CAST(ORDINE AS INT64) AS ORDINE
+            FROM {_table('EVENTI_ALTRICOSTI')}
+            WHERE CAST(ID_EVENTO AS INT64) = @id
+            ORDER BY ORDINE
+        """, param),
+        query(f"""
+            SELECT CAST(ID AS INT64) AS ID, CAST(ACCONTO AS FLOAT64) AS ACCONTO,
+                   CAST(DATA AS STRING) AS DATA, CAST(A_CONFERMA AS INT64) AS A_CONFERMA,
+                   DESCRIZIONE, CAST(ORDINE AS INT64) AS ORDINE
+            FROM {_table('EVENTI_ACCONTI')}
+            WHERE CAST(ID_EVENTO AS INT64) = @id
+            ORDER BY ORDINE
+        """, param),
+        query(f"SELECT COALESCE(MAX(CAST(ID AS INT64)), 0) AS max_id FROM {_table('EVENTI_ALTRICOSTI')}"),
+        query(f"SELECT COALESCE(MAX(CAST(ID AS INT64)), 0) AS max_id FROM {_table('EVENTI_ACCONTI')}"),
+    )
+
+    # Build ospiti — if none exist, auto-create one row per type in TB_TIPI_OSPITI
+    if ospiti_rows:
+        ospiti = [
+            OspiteCached(
+                cod_tipo=str(r["COD_TIPO_OSPITE"]),
+                descrizione=static.tipi_ospiti.get(str(r["COD_TIPO_OSPITE"])),
+                numero=int(r["NUMERO"] or 0),
+                costo=float(r["COSTO"] or 0),
+                sconto=float(r["SCONTO"] or 0),
+                note=r.get("NOTE") or None,
+                ordine=int(r["ORDINE"] or 0),
+            )
+            for r in ospiti_rows
+        ]
+    else:
+        # Auto-create one row per tipo from static
+        ospiti = [
+            OspiteCached(
+                cod_tipo=cod_tipo,
+                descrizione=descrizione,
+                numero=0,
+                costo=0.0,
+                sconto=0.0,
+                note=None,
+                ordine=idx * 10,
+            )
+            for idx, (cod_tipo, descrizione) in enumerate(static.tipi_ospiti.items())
+        ]
+
+    extra = [
+        ExtraCached(
+            id=int(r["ID"]),
+            descrizione=str(r["DESCRIZIONE"] or ""),
+            costo=float(r["COSTO"] or 0),
+            quantity=float(r["QUANTITY"] or 1),
+            ordine=int(r["ORDINE"] or 0),
+        )
+        for r in extra_rows
+    ]
+
+    acconti = [
+        AccontoCached(
+            id=int(r["ID"]),
+            acconto=float(r["ACCONTO"] or 0),
+            data=str(r["DATA"])[:10] if r.get("DATA") else None,
+            a_conferma=int(r["A_CONFERMA"] or 0),
+            descrizione=r.get("DESCRIZIONE") or None,
+            ordine=int(r["ORDINE"] or 0),
+        )
+        for r in acconti_rows
+    ]
+
+    # Compute next ordine values
+    next_extra_ord = (max(e.ordine for e in extra) + 10) if extra else 10
+    next_acc_ord = (max(a.ordine for a in acconti) + 10) if acconti else 10
+
+    return SchedaCache(
+        id_evento=id_evento,
+        ospiti=ospiti,
+        extra=extra,
+        acconti=acconti,
+        _next_extra_id=-1,
+        _next_acconto_id=-1,
+        _next_extra_ordine=next_extra_ord,
+        _next_acconto_ordine=next_acc_ord,
+    )

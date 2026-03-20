@@ -6,7 +6,7 @@ from google.cloud import bigquery
 
 from db.bigquery import _table, dml, insert, query
 from models.evento import EventoCreate, EventoResponse, PatchEventoRequest
-from services.cache import invalidate_lista
+from services.cache import invalidate_lista, invalidate_scheda
 
 router = APIRouter(prefix="/eventi", tags=["eventi"])
 
@@ -180,4 +180,5 @@ async def patch_evento(id_evento: int, body: PatchEventoRequest) -> dict:
     # Se cambiano ospiti o stato, invalida la cache della lista (ricalcola al prossimo GET)
     if body.tot_ospiti is not None or body.perc_sedute_aper is not None or body.stato is not None:
         invalidate_lista(id_evento)
+        invalidate_scheda(id_evento)
     return {"updated": id_evento}

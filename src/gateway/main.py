@@ -23,6 +23,7 @@ from gateway.routers.eventi import router as eventi_router
 from gateway.routers.lista_carico import router as lista_router
 from gateway.routers.lookup import router as lookup_router
 from gateway.routers.reportistica import router as report_router
+from gateway.routers.scheda import router as scheda_router
 
 # ── Structured JSON logging ───────────────────────────────────────────────────
 _handler = logging.StreamHandler()
@@ -53,6 +54,7 @@ app.include_router(lookup_router)
 app.include_router(lista_router)
 app.include_router(catalogo_router)
 app.include_router(report_router)
+app.include_router(scheda_router)
 
 
 @app.get("/health")
