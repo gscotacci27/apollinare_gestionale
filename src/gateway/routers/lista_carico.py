@@ -30,9 +30,23 @@ async def get_lista(id_evento: int) -> list[ListaCaricaItem]:
             ) = 1
         ),
         art_dedup AS (
-            SELECT COD_ARTICOLO, ANY_VALUE(DESCRIZIONE) AS DESCRIZIONE
+            SELECT COD_ARTICOLO,
+                   ANY_VALUE(DESCRIZIONE) AS DESCRIZIONE,
+                   ANY_VALUE(COD_CATEG)   AS COD_CATEG
             FROM {_table('ARTICOLI')}
             GROUP BY COD_ARTICOLO
+        ),
+        categ_dedup AS (
+            SELECT COD_CATEG, ANY_VALUE(COD_TIPO) AS COD_TIPO
+            FROM {_table('TB_CODICI_CATEG')}
+            GROUP BY COD_CATEG
+        ),
+        tipo_dedup AS (
+            SELECT COD_TIPO,
+                   ANY_VALUE(DESCRIZIONE)              AS DESCRIZIONE,
+                   ANY_VALUE(CAST(COD_STEP AS INT64))  AS COD_STEP
+            FROM {_table('TB_TIPI_MAT')}
+            GROUP BY COD_TIPO
         )
         SELECT
             CAST(d.ID AS INT64)                              AS id,
@@ -46,10 +60,14 @@ async def get_lista(id_evento: int) -> list[ListaCaricaItem]:
             COALESCE(CAST(d.QTA_MAN_SEDU AS FLOAT64), 0)     AS qta_man_sedu,
             COALESCE(CAST(d.QTA_MAN_BUFDOL AS FLOAT64), 0)   AS qta_man_bufdol,
             d.NOTE                                           AS note,
-            CAST(COALESCE(d.ORDINE, 0) AS INT64)             AS ordine
+            CAST(COALESCE(d.ORDINE, 0) AS INT64)             AS ordine,
+            t.DESCRIZIONE                                    AS tipo_descrizione,
+            COALESCE(t.COD_STEP, 999)                        AS cod_step
         FROM dedup d
-        LEFT JOIN art_dedup a ON a.COD_ARTICOLO = d.COD_ARTICOLO
-        ORDER BY ordine
+        LEFT JOIN art_dedup   a ON a.COD_ARTICOLO = d.COD_ARTICOLO
+        LEFT JOIN categ_dedup c ON c.COD_CATEG    = a.COD_CATEG
+        LEFT JOIN tipo_dedup  t ON t.COD_TIPO     = c.COD_TIPO
+        ORDER BY cod_step, ordine
     """, [bigquery.ScalarQueryParameter("id_evento", "INT64", id_evento)])
     return [ListaCaricaItem(**{k.lower(): v for k, v in r.items()}) for r in rows]
 

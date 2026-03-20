@@ -58,9 +58,11 @@ class ListaCaricaItem(BaseModel):
     qta_man_ape: float = 0
     qta_man_sedu: float = 0
     qta_man_bufdol: float = 0
-    costo_articolo: float | None = None
     note: str | None = None
     ordine: int = 0
+    # Sezione merceologica (da TB_TIPI_MAT via TB_CODICI_CATEG)
+    tipo_descrizione: str | None = None
+    cod_step: int = 999
 
 
 class OspitiItem(BaseModel):
