@@ -20,6 +20,7 @@ from config.settings import get_settings
 from gateway.routers.catalogo import router as catalogo_router
 from gateway.routers.eventi import router as eventi_router
 from gateway.routers.lista_carico import router as lista_router
+from gateway.routers.lookup import router as lookup_router
 from gateway.routers.reportistica import router as report_router
 
 # ── Structured JSON logging ───────────────────────────────────────────────────
@@ -47,6 +48,7 @@ app.add_middleware(
 )
 
 app.include_router(eventi_router)
+app.include_router(lookup_router)
 app.include_router(lista_router)
 app.include_router(catalogo_router)
 app.include_router(report_router)
