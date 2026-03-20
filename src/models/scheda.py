@@ -31,11 +31,25 @@ class AccontoItem(BaseModel):
     ordine: int = 0
 
 
+class DegustazioneItem(BaseModel):
+    id: int
+    data: str | None = None
+    nome: str | None = None
+    n_persone: int = 0
+    costo_degustazione: float = 0
+    detraibile: int = 1
+    consumata: int = 0
+    note: str | None = None
+
+
 class PreventivoCalc(BaseModel):
     ospiti_subtotale: float
     articoli_subtotale: float
     extra_subtotale: float
+    degustazioni_detraibili: float = 0
+    sconto_totale: float = 0
     totale_netto: float
+    totale_manuale: float | None = None
     acconti_totale: float
     saldo: float
 
@@ -44,6 +58,7 @@ class SchedaResponse(BaseModel):
     ospiti: list[OspiteItem]
     extra: list[ExtraItem]
     acconti: list[AccontoItem]
+    degustazioni: list[DegustazioneItem]
     preventivo: PreventivoCalc
 
 
@@ -65,3 +80,20 @@ class AddAccontoRequest(BaseModel):
     data: str | None = None
     a_conferma: int = 0
     descrizione: str | None = None
+
+
+class AddDegustazioneRequest(BaseModel):
+    data: str | None = None
+    nome: str | None = None
+    n_persone: int = 0
+    costo_degustazione: float = 0
+    detraibile: int = 1
+    note: str | None = None
+
+
+class PatchScontoRequest(BaseModel):
+    sconto_totale: float
+
+
+class PatchTotaleRequest(BaseModel):
+    totale_manuale: float | None

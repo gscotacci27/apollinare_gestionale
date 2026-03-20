@@ -12,15 +12,20 @@ from db.bigquery import _table, query
 from models.scheda import (
     AccontoItem,
     AddAccontoRequest,
+    AddDegustazioneRequest,
     AddExtraRequest,
+    DegustazioneItem,
     ExtraItem,
     OspiteItem,
     PatchOspiteRequest,
+    PatchScontoRequest,
+    PatchTotaleRequest,
     PreventivoCalc,
     SchedaResponse,
 )
 from services.cache import (
     AccontoCached,
+    DegustCached,
     ExtraCached,
     OspiteCached,
     calcola_preventivo,
@@ -94,6 +99,19 @@ def _build_response(id_evento: int) -> SchedaResponse:
                 ordine=a.ordine,
             )
             for a in scheda.acconti
+        ],
+        degustazioni=[
+            DegustazioneItem(
+                id=d.id,
+                data=d.data,
+                nome=d.nome,
+                n_persone=d.n_persone,
+                costo_degustazione=d.costo_degustazione,
+                detraibile=d.detraibile,
+                consumata=d.consumata,
+                note=d.note,
+            )
+            for d in scheda.degustazioni
         ],
         preventivo=PreventivoCalc(**prev_dict),
     )
@@ -206,6 +224,64 @@ async def delete_acconto(id_evento: int, id_acc: int) -> dict:
         raise HTTPException(404, f"Acconto {id_acc} non trovato")
     scheda.dirty = True
     return {"deleted": id_acc}
+
+
+# ── ADD DEGUSTAZIONE ───────────────────────────────────────────────────────────
+
+@router.post("/degustazioni", response_model=DegustazioneItem, status_code=201)
+async def add_degustazione(id_evento: int, body: AddDegustazioneRequest) -> DegustazioneItem:
+    scheda = await get_scheda_cache(id_evento)
+    item = DegustCached(
+        id=scheda.next_degust_id(),
+        data=body.data,
+        nome=body.nome,
+        n_persone=body.n_persone,
+        costo_degustazione=body.costo_degustazione,
+        detraibile=body.detraibile,
+        consumata=0,
+        note=body.note,
+        is_new=True,
+    )
+    scheda.degustazioni.append(item)
+    scheda.dirty = True
+    return DegustazioneItem(
+        id=item.id, data=item.data, nome=item.nome,
+        n_persone=item.n_persone, costo_degustazione=item.costo_degustazione,
+        detraibile=item.detraibile, consumata=item.consumata, note=item.note,
+    )
+
+
+# ── DELETE DEGUSTAZIONE ────────────────────────────────────────────────────────
+
+@router.delete("/degustazioni/{id_degust}", response_model=dict)
+async def delete_degustazione(id_evento: int, id_degust: int) -> dict:
+    scheda = await get_scheda_cache(id_evento)
+    before = len(scheda.degustazioni)
+    scheda.degustazioni = [d for d in scheda.degustazioni if d.id != id_degust]
+    if len(scheda.degustazioni) == before:
+        raise HTTPException(404, f"Degustazione {id_degust} non trovata")
+    scheda.dirty = True
+    return {"deleted": id_degust}
+
+
+# ── PATCH SCONTO ───────────────────────────────────────────────────────────────
+
+@router.patch("/sconto", response_model=dict)
+async def patch_sconto(id_evento: int, body: PatchScontoRequest) -> dict:
+    scheda = await get_scheda_cache(id_evento)
+    scheda.sconto_totale = body.sconto_totale
+    scheda.dirty = True
+    return {"sconto_totale": scheda.sconto_totale}
+
+
+# ── PATCH TOTALE MANUALE ───────────────────────────────────────────────────────
+
+@router.patch("/totale-manuale", response_model=dict)
+async def patch_totale_manuale(id_evento: int, body: PatchTotaleRequest) -> dict:
+    scheda = await get_scheda_cache(id_evento)
+    scheda.totale_manuale = body.totale_manuale
+    scheda.dirty = True
+    return {"totale_manuale": scheda.totale_manuale}
 
 
 # ── SALVA ──────────────────────────────────────────────────────────────────────

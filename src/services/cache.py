@@ -447,13 +447,30 @@ class AccontoCached:
 
 
 @dataclass
+class DegustCached:
+    id: int
+    data: str | None
+    nome: str | None
+    n_persone: int
+    costo_degustazione: float
+    detraibile: int
+    consumata: int
+    note: str | None
+    is_new: bool = False
+
+
+@dataclass
 class SchedaCache:
     id_evento: int
     ospiti: list[OspiteCached]
     extra: list[ExtraCached]
     acconti: list[AccontoCached]
+    degustazioni: list[DegustCached] = field(default_factory=list)
+    sconto_totale: float = 0.0
+    totale_manuale: float | None = None
     _next_extra_id: int = field(default=-1)
     _next_acconto_id: int = field(default=-1)
+    _next_degust_id: int = field(default=-1)
     _next_extra_ordine: int = field(default=10)
     _next_acconto_ordine: int = field(default=10)
     dirty: bool = False
@@ -466,6 +483,11 @@ class SchedaCache:
     def next_acconto_id(self) -> int:
         v = self._next_acconto_id
         self._next_acconto_id -= 1
+        return v
+
+    def next_degust_id(self) -> int:
+        v = self._next_degust_id
+        self._next_degust_id -= 1
         return v
 
     def next_extra_ordine(self) -> int:
@@ -599,6 +621,52 @@ async def save_scheda_to_bq(id_evento: int) -> bool:
         if acconti_rows:
             await insert_many("EVENTI_ACCONTI", acconti_rows)
 
+        # ── EVENTI_DET_DEGUST ──────────────────────────────────────────────────
+        if any(d.is_new for d in scheda.degustazioni):
+            id_rows = await query(
+                f"SELECT COALESCE(MAX(CAST(ID AS INT64)), 0) AS max_id FROM {_table('EVENTI_DET_DEGUST')}"
+            )
+            next_id = int(id_rows[0]["max_id"]) + 1
+            for d in scheda.degustazioni:
+                if d.is_new:
+                    d.id = next_id
+                    d.is_new = False
+                    next_id += 1
+
+        await dml(
+            f"DELETE FROM {_table('EVENTI_DET_DEGUST')} WHERE CAST(ID_EVENTO AS INT64) = @id",
+            param,
+        )
+        degust_rows = [
+            {
+                "ID":                 d.id,
+                "ID_EVENTO":          id_evento,
+                "DATA":               d.data or None,
+                "NOME":               d.nome or "",
+                "N_PERSONE":          d.n_persone,
+                "COSTO_DEGUSTAZIONE": d.costo_degustazione,
+                "DETRAIBILE":         d.detraibile,
+                "CONSUMATA":          d.consumata,
+                "NOTE":               d.note or "",
+            }
+            for d in scheda.degustazioni
+        ]
+        if degust_rows:
+            await insert_many("EVENTI_DET_DEGUST", degust_rows)
+
+        # ── SCONTO + TOTALE MANUALE su EVENTI ──────────────────────────────────
+        tm_param = bigquery.ScalarQueryParameter("totale_manuale", "FLOAT64", scheda.totale_manuale)
+        await dml(
+            f"UPDATE {_table('EVENTI')} SET "
+            f"SCONTO_TOTALE = @sconto, TOTALE_MANUALE = @totale_manuale "
+            f"WHERE CAST(ID AS INT64) = @id",
+            [
+                bigquery.ScalarQueryParameter("id", "INT64", id_evento),
+                bigquery.ScalarQueryParameter("sconto", "FLOAT64", scheda.sconto_totale),
+                tm_param,
+            ],
+        )
+
         scheda.dirty = False
         logger.info("Scheda salvata su BQ", extra={"id_evento": id_evento})
         return True
@@ -610,13 +678,11 @@ def calcola_preventivo(
     static: StaticCache,
 ) -> dict:
     """Calcola il preventivo in puro Python."""
-    # Subtotale ospiti: somma (numero × costo × (1 - sconto/100))
     ospiti_subtotale = sum(
         o.numero * o.costo * (1.0 - o.sconto / 100.0)
         for o in scheda.ospiti
     )
 
-    # Subtotale articoli: costo_uni × (qta_ape + qta_sedu + qta_bufdol + qta_man_*)
     articoli_subtotale = 0.0
     if lista is not None:
         for item in lista.items:
@@ -627,20 +693,31 @@ def calcola_preventivo(
             )
             articoli_subtotale += costo_uni * qta
 
-    # Subtotale extra
     extra_subtotale = sum(e.costo * e.quantity for e in scheda.extra)
 
-    totale_netto = ospiti_subtotale + articoli_subtotale + extra_subtotale
+    degustazioni_detraibili = sum(
+        d.costo_degustazione for d in scheda.degustazioni if d.detraibile
+    )
+
+    totale_calc = (
+        ospiti_subtotale + articoli_subtotale + extra_subtotale
+        - degustazioni_detraibili - scheda.sconto_totale
+    )
+    totale_netto = scheda.totale_manuale if scheda.totale_manuale is not None else totale_calc
+
     acconti_totale = sum(a.acconto for a in scheda.acconti)
     saldo = totale_netto - acconti_totale
 
     return {
-        "ospiti_subtotale":    round(ospiti_subtotale, 2),
-        "articoli_subtotale":  round(articoli_subtotale, 2),
-        "extra_subtotale":     round(extra_subtotale, 2),
-        "totale_netto":        round(totale_netto, 2),
-        "acconti_totale":      round(acconti_totale, 2),
-        "saldo":               round(saldo, 2),
+        "ospiti_subtotale":        round(ospiti_subtotale, 2),
+        "articoli_subtotale":      round(articoli_subtotale, 2),
+        "extra_subtotale":         round(extra_subtotale, 2),
+        "degustazioni_detraibili": round(degustazioni_detraibili, 2),
+        "sconto_totale":           round(scheda.sconto_totale, 2),
+        "totale_netto":            round(totale_netto, 2),
+        "totale_manuale":          round(scheda.totale_manuale, 2) if scheda.totale_manuale is not None else None,
+        "acconti_totale":          round(acconti_totale, 2),
+        "saldo":                   round(saldo, 2),
     }
 
 
@@ -649,7 +726,10 @@ async def _load_scheda_from_bq(id_evento: int) -> SchedaCache:
     static = await get_static()
     param = [bigquery.ScalarQueryParameter("id", "INT64", id_evento)]
 
-    ospiti_rows, extra_rows, acconti_rows, max_extra_id_rows, max_acc_id_rows = await asyncio.gather(
+    (
+        ospiti_rows, extra_rows, acconti_rows, max_extra_id_rows, max_acc_id_rows,
+        degust_rows, evento_fin_rows,
+    ) = await asyncio.gather(
         query(f"""
             SELECT COD_TIPO_OSPITE, CAST(NUMERO AS INT64) AS NUMERO,
                    CAST(COSTO AS FLOAT64) AS COSTO, CAST(SCONTO AS FLOAT64) AS SCONTO,
@@ -675,6 +755,23 @@ async def _load_scheda_from_bq(id_evento: int) -> SchedaCache:
         """, param),
         query(f"SELECT COALESCE(MAX(CAST(ID AS INT64)), 0) AS max_id FROM {_table('EVENTI_ALTRICOSTI')}"),
         query(f"SELECT COALESCE(MAX(CAST(ID AS INT64)), 0) AS max_id FROM {_table('EVENTI_ACCONTI')}"),
+        query(f"""
+            SELECT CAST(ID AS INT64) AS ID,
+                   SUBSTR(CAST(DATA AS STRING), 1, 10) AS DATA,
+                   NOME, CAST(N_PERSONE AS INT64) AS N_PERSONE,
+                   CAST(COSTO_DEGUSTAZIONE AS FLOAT64) AS COSTO_DEGUSTAZIONE,
+                   CAST(DETRAIBILE AS INT64) AS DETRAIBILE,
+                   CAST(CONSUMATA AS INT64) AS CONSUMATA, NOTE
+            FROM {_table('EVENTI_DET_DEGUST')}
+            WHERE CAST(ID_EVENTO AS INT64) = @id
+            ORDER BY ID
+        """, param),
+        query(f"""
+            SELECT CAST(COALESCE(SCONTO_TOTALE, 0) AS FLOAT64) AS sconto_totale,
+                   CAST(TOTALE_MANUALE AS FLOAT64) AS totale_manuale
+            FROM {_table('EVENTI')}
+            WHERE CAST(ID AS INT64) = @id LIMIT 1
+        """, param),
     )
 
     # Build ospiti — if none exist, auto-create one row per type in TB_TIPI_OSPITI
@@ -729,6 +826,24 @@ async def _load_scheda_from_bq(id_evento: int) -> SchedaCache:
         for r in acconti_rows
     ]
 
+    degustazioni = [
+        DegustCached(
+            id=int(r["ID"]),
+            data=r.get("DATA") or None,
+            nome=r.get("NOME") or None,
+            n_persone=int(r.get("N_PERSONE") or 0),
+            costo_degustazione=float(r.get("COSTO_DEGUSTAZIONE") or 0),
+            detraibile=int(r.get("DETRAIBILE") or 0),
+            consumata=int(r.get("CONSUMATA") or 0),
+            note=r.get("NOTE") or None,
+        )
+        for r in degust_rows
+    ]
+
+    evt_fin = evento_fin_rows[0] if evento_fin_rows else {}
+    sconto_totale = float(evt_fin.get("sconto_totale") or 0)
+    totale_manuale = float(evt_fin["totale_manuale"]) if evt_fin.get("totale_manuale") is not None else None
+
     # Compute next ordine values
     next_extra_ord = (max(e.ordine for e in extra) + 10) if extra else 10
     next_acc_ord = (max(a.ordine for a in acconti) + 10) if acconti else 10
@@ -738,8 +853,12 @@ async def _load_scheda_from_bq(id_evento: int) -> SchedaCache:
         ospiti=ospiti,
         extra=extra,
         acconti=acconti,
+        degustazioni=degustazioni,
+        sconto_totale=sconto_totale,
+        totale_manuale=totale_manuale,
         _next_extra_id=-1,
         _next_acconto_id=-1,
+        _next_degust_id=-1,
         _next_extra_ordine=next_extra_ord,
         _next_acconto_ordine=next_acc_ord,
     )
