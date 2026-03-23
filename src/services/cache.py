@@ -688,6 +688,7 @@ def calcola_preventivo(
     )
 
     articoli_subtotale = 0.0
+    articoli_lista = []
     if lista is not None:
         for item in lista.items:
             costo_uni = static.costi_articoli.get(item.cod_articolo, 0.0)
@@ -695,7 +696,16 @@ def calcola_preventivo(
                 item.qta_ape + item.qta_sedu + item.qta_bufdol
                 + item.qta_man_ape + item.qta_man_sedu + item.qta_man_bufdol
             )
-            articoli_subtotale += costo_uni * qta
+            subtotale = costo_uni * qta
+            articoli_subtotale += subtotale
+            if costo_uni > 0:
+                articoli_lista.append({
+                    "cod_articolo": item.cod_articolo,
+                    "descrizione":  item.descrizione,
+                    "qta":          round(qta, 4),
+                    "costo_uni":    round(costo_uni, 4),
+                    "subtotale":    round(subtotale, 2),
+                })
 
     extra_subtotale = sum(e.costo * e.quantity for e in scheda.extra)
 
@@ -715,6 +725,7 @@ def calcola_preventivo(
     return {
         "ospiti_subtotale":        round(ospiti_subtotale, 2),
         "articoli_subtotale":      round(articoli_subtotale, 2),
+        "articoli_lista":          articoli_lista,
         "extra_subtotale":         round(extra_subtotale, 2),
         "degustazioni_detraibili": round(degustazioni_detraibili, 2),
         "sconto_totale":           round(scheda.sconto_totale, 2),

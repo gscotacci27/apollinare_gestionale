@@ -42,9 +42,18 @@ class DegustazioneItem(BaseModel):
     note: str | None = None
 
 
+class ArticoloCostoItem(BaseModel):
+    cod_articolo: str
+    descrizione: str | None
+    qta: float
+    costo_uni: float
+    subtotale: float
+
+
 class PreventivoCalc(BaseModel):
     ospiti_subtotale: float
     articoli_subtotale: float
+    articoli_lista: list[ArticoloCostoItem] = []
     extra_subtotale: float
     degustazioni_detraibili: float = 0
     sconto_totale: float = 0
