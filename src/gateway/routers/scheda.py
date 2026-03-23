@@ -44,8 +44,7 @@ router = APIRouter(prefix="/eventi/{id_evento}/scheda", tags=["scheda"])
 async def _check_evento(id_evento: int) -> None:
     """Verifica che l'evento esista. 404 se non trovato."""
     rows = await query(
-        f"SELECT CAST(ID AS INT64) AS id FROM {_table('EVENTI')} "
-        f"WHERE CAST(ID AS INT64) = @id LIMIT 1",
+        f"SELECT id FROM {_table('eventi')} WHERE id = @id LIMIT 1",
         [bigquery.ScalarQueryParameter("id", "INT64", id_evento)],
     )
     if not rows:

@@ -26,15 +26,14 @@ router = APIRouter(prefix="/eventi/{id_evento}/lista", tags=["lista-carico"])
 
 
 async def _check_confermato(id_evento: int) -> None:
-    """Verifica che l'evento sia in stato Confermato (400). Altrimenti 403."""
+    """Verifica che l'evento sia in stato confermato. Altrimenti 403."""
     rows = await query(
-        f"SELECT CAST(STATO AS INT64) AS stato FROM {_table('EVENTI')} "
-        f"WHERE CAST(ID AS INT64) = @id LIMIT 1",
+        f"SELECT stato FROM {_table('eventi')} WHERE id = @id LIMIT 1",
         [bigquery.ScalarQueryParameter("id", "INT64", id_evento)],
     )
     if not rows:
         raise HTTPException(404, f"Evento {id_evento} non trovato")
-    if int(rows[0]["stato"] or 0) != 400:
+    if rows[0]["stato"] != "confermato":
         raise HTTPException(403, "La lista di carico è accessibile solo per eventi confermati")
 
 
@@ -84,10 +83,12 @@ async def add_articolo(id_evento: int, body: AddArticoloRequest) -> ListaCaricaI
 
     # Recupera ospiti dall'evento per calcolare quantità
     evt_rows = await query(
-        f"""SELECT CAST(TOT_OSPITI AS INT64) AS tot_ospiti,
-                   CAST(PERC_SEDUTE_APER AS FLOAT64) AS perc_sedute_aper
-            FROM {_table('EVENTI')}
-            WHERE CAST(ID AS INT64) = @id LIMIT 1""",
+        f"""SELECT
+              COALESCE(n_adulti,0) + COALESCE(n_bambini,0)
+                + COALESCE(n_fornitori,0) + COALESCE(n_altri,0) AS tot_ospiti,
+              perc_sedute_aper
+            FROM {_table('eventi')}
+            WHERE id = @id LIMIT 1""",
         [bigquery.ScalarQueryParameter("id", "INT64", id_evento)],
     )
     evt = evt_rows[0] if evt_rows else {}
@@ -166,10 +167,12 @@ async def recalcola_lista(id_evento: int) -> dict:
 
     static = await get_static()
     evt_rows = await query(
-        f"""SELECT CAST(TOT_OSPITI AS INT64) AS tot_ospiti,
-                   CAST(PERC_SEDUTE_APER AS FLOAT64) AS perc_sedute_aper
-            FROM {_table('EVENTI')}
-            WHERE CAST(ID AS INT64) = @id LIMIT 1""",
+        f"""SELECT
+              COALESCE(n_adulti,0) + COALESCE(n_bambini,0)
+                + COALESCE(n_fornitori,0) + COALESCE(n_altri,0) AS tot_ospiti,
+              perc_sedute_aper
+            FROM {_table('eventi')}
+            WHERE id = @id LIMIT 1""",
         [bigquery.ScalarQueryParameter("id", "INT64", id_evento)],
     )
     evt    = evt_rows[0] if evt_rows else {}

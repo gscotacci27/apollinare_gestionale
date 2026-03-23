@@ -11,8 +11,8 @@ class EventoCreate(BaseModel):
     data: date
     ora_evento: str | None = None
     id_location: int | None = None
-    stato: int = 100          # 100=Preventivo, 200=In lavorazione, 400=Confermato
-    cliente: str | None = None
+    stato: str = "in_attesa_conferma"   # bozza|in_attesa_conferma|in_lavorazione|confermato
+    cliente: str | None = None          # nome libero (legacy / web form)
 
     @field_validator("data")
     @classmethod
@@ -27,24 +27,23 @@ class EventoResponse(BaseModel):
     descrizione: str | None
     data: str | None
     ora_evento: str | None
-    stato: int
-    cliente: str | None
+    stato: str                    # bozza|in_attesa_conferma|in_lavorazione|confermato|annullato
+    cliente: str | None           # nome cliente (da JOIN clienti.nome)
     id_location: int | None
-    location_nome: str | None     # da JOIN con LOCATION
-    tot_ospiti: int | None
-    perc_sedute_aper: float | None = None   # % ospiti in piedi (aperitivo)
+    location_nome: str | None     # da JOIN con location.nome
+    tot_ospiti: int | None        # derivato: n_adulti + n_bambini + n_fornitori + n_altri
+    perc_sedute_aper: float | None = None
 
     model_config = {"from_attributes": True}
 
 
 class PatchEventoRequest(BaseModel):
-    stato: int | None = None
+    stato: str | None = None
     descrizione: str | None = None
     cliente: str | None = None
-    data: str | None = None        # ISO date "YYYY-MM-DD"
+    data: str | None = None
     ora_evento: str | None = None
     id_location: int | None = None
-    tot_ospiti: int | None = None
     perc_sedute_aper: float | None = None
 
 

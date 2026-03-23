@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     gcp_project_id: str = "project-fac564f6-0087-4fc3-a53"
     gcp_region: str = "europe-west8"
-    bq_dataset: str = "apollinare_legacy"
+    bq_dataset: str = "apollinare_db"
 
     class Config:
         env_file = ".env"

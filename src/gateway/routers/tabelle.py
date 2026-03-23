@@ -32,23 +32,17 @@ class LocationMergeRequest(BaseModel):
 async def list_location_con_uso() -> list[dict]:
     """Location con conteggio eventi associati e lista simili (fuzzy)."""
     rows = await query(f"""
-        WITH loc AS (
-            SELECT CAST(ID AS INT64) AS id, ANY_VALUE(LOCATION) AS location
-            FROM {_table('LOCATION')}
-            WHERE ID IS NOT NULL AND LOCATION IS NOT NULL
-            GROUP BY ID
-        ),
-        uso AS (
-            SELECT CAST(ID_LOCATION AS INT64) AS id_location, COUNT(*) AS n_eventi
-            FROM {_table('EVENTI')}
-            WHERE ID_LOCATION IS NOT NULL
-              AND COALESCE(CAST(DELETED AS INT64), 0) = 0
-            GROUP BY ID_LOCATION
-        )
-        SELECT l.id, l.location, COALESCE(u.n_eventi, 0) AS n_eventi
-        FROM loc l
-        LEFT JOIN uso u ON u.id_location = l.id
-        ORDER BY l.location
+        SELECT l.id, l.nome AS location, COALESCE(u.n_eventi, 0) AS n_eventi
+        FROM {_table('location')} l
+        LEFT JOIN (
+            SELECT id_location, COUNT(*) AS n_eventi
+            FROM {_table('eventi')}
+            WHERE id_location IS NOT NULL
+              AND COALESCE(deleted, FALSE) = FALSE
+            GROUP BY id_location
+        ) u ON u.id_location = l.id
+        WHERE l.id IS NOT NULL AND l.nome IS NOT NULL
+        ORDER BY l.nome
     """)
     return rows
 
@@ -57,17 +51,14 @@ async def list_location_con_uso() -> list[dict]:
 async def location_simili(id_location: int, soglia: float = 0.6) -> list[dict]:
     """Suggerisce location con nome simile (fuzzy match) per il merge."""
     rows = await query(f"""
-        SELECT CAST(ID AS INT64) AS id, ANY_VALUE(LOCATION) AS location
-        FROM {_table('LOCATION')}
-        WHERE ID IS NOT NULL AND LOCATION IS NOT NULL AND CAST(ID AS INT64) != @id
-        GROUP BY ID
-        ORDER BY location
+        SELECT id, nome AS location
+        FROM {_table('location')}
+        WHERE id IS NOT NULL AND nome IS NOT NULL AND id != @id
+        ORDER BY nome
     """, [bigquery.ScalarQueryParameter("id", "INT64", id_location)])
 
-    # Prendi il nome della location di riferimento
     source_rows = await query(
-        f"SELECT ANY_VALUE(LOCATION) AS location FROM {_table('LOCATION')} "
-        f"WHERE CAST(ID AS INT64) = @id AND LOCATION IS NOT NULL GROUP BY ID",
+        f"SELECT nome AS location FROM {_table('location')} WHERE id = @id",
         [bigquery.ScalarQueryParameter("id", "INT64", id_location)],
     )
     if not source_rows:
@@ -96,7 +87,7 @@ async def rename_location(id_location: int, body: LocationPatch) -> dict:
     if not name:
         raise HTTPException(400, "Il nome non può essere vuoto")
     affected = await dml(
-        f"UPDATE {_table('LOCATION')} SET LOCATION = @loc WHERE CAST(ID AS INT64) = @id",
+        f"UPDATE {_table('location')} SET nome = @loc WHERE id = @id",
         [
             bigquery.ScalarQueryParameter("loc", "STRING", name),
             bigquery.ScalarQueryParameter("id", "INT64", id_location),
@@ -111,14 +102,14 @@ async def rename_location(id_location: int, body: LocationPatch) -> dict:
 async def delete_location(id_location: int) -> dict:
     """Elimina una location solo se non usata da eventi."""
     uso = await query(
-        f"SELECT COUNT(*) AS cnt FROM {_table('EVENTI')} "
-        f"WHERE CAST(ID_LOCATION AS INT64) = @id AND COALESCE(CAST(DELETED AS INT64),0) = 0",
+        f"SELECT COUNT(*) AS cnt FROM {_table('eventi')} "
+        f"WHERE id_location = @id AND COALESCE(deleted, FALSE) = FALSE",
         [bigquery.ScalarQueryParameter("id", "INT64", id_location)],
     )
     if int(uso[0]["cnt"] or 0) > 0:
         raise HTTPException(409, "Location usata da eventi esistenti, impossibile eliminare")
     await dml(
-        f"DELETE FROM {_table('LOCATION')} WHERE CAST(ID AS INT64) = @id",
+        f"DELETE FROM {_table('location')} WHERE id = @id",
         [bigquery.ScalarQueryParameter("id", "INT64", id_location)],
     )
     return {"deleted": id_location}
@@ -133,8 +124,7 @@ async def merge_location(id_location: int, body: LocationMergeRequest) -> dict:
         raise HTTPException(400, "Source e target devono essere diversi")
 
     rows = await query(
-        f"SELECT CAST(ID AS INT64) AS id FROM {_table('LOCATION')} "
-        f"WHERE CAST(ID AS INT64) IN UNNEST(@ids) GROUP BY ID",
+        f"SELECT id FROM {_table('location')} WHERE id IN UNNEST(@ids)",
         [bigquery.ArrayQueryParameter("ids", "INT64", [source_id, target_id])],
     )
     found = {r["id"] for r in rows}
@@ -143,14 +133,14 @@ async def merge_location(id_location: int, body: LocationMergeRequest) -> dict:
             raise HTTPException(404, f"Location {label} {missing_id} non trovata")
 
     moved = await dml(
-        f"UPDATE {_table('EVENTI')} SET ID_LOCATION = @target WHERE CAST(ID_LOCATION AS INT64) = @source",
+        f"UPDATE {_table('eventi')} SET id_location = @target WHERE id_location = @source",
         [
             bigquery.ScalarQueryParameter("target", "INT64", target_id),
             bigquery.ScalarQueryParameter("source", "INT64", source_id),
         ],
     )
     await dml(
-        f"DELETE FROM {_table('LOCATION')} WHERE CAST(ID AS INT64) = @source",
+        f"DELETE FROM {_table('location')} WHERE id = @source",
         [bigquery.ScalarQueryParameter("source", "INT64", source_id)],
     )
     return {"merged": source_id, "into": target_id, "eventi_spostati": moved}
@@ -165,7 +155,6 @@ class ArticoloPatch(BaseModel):
     qta_giac: float | None = None
     rank: float | None = None
     cod_categ: str | None = None
-    coeff: float | None = None
     coeff_a: float | None = None
     coeff_s: float | None = None
     coeff_b: float | None = None
@@ -189,7 +178,7 @@ class ArticoloCreate(BaseModel):
     qta_std_s: float | None = None
     qta_std_b: float | None = None
     perc_ospiti: float = 100
-    perc_iva: float = 10
+    perc_iva: float | None = None
 
 
 @router.get("/articoli")
@@ -198,45 +187,32 @@ async def list_articoli_tabelle(search: str | None = None) -> list[dict]:
     conditions: list[str] = []
     params: list = []
     if search:
-        conditions.append("LOWER(a.DESCRIZIONE) LIKE @search")
+        conditions.append("LOWER(a.descrizione) LIKE @search")
         params.append(bigquery.ScalarQueryParameter("search", "STRING", f"%{search.lower()}%"))
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = await query(f"""
-        WITH categ_dedup AS (
-            SELECT COD_CATEG, ANY_VALUE(COD_TIPO) AS COD_TIPO
-            FROM {_table('TB_CODICI_CATEG')}
-            GROUP BY COD_CATEG
-        ),
-        tipo_dedup AS (
-            SELECT COD_TIPO, ANY_VALUE(DESCRIZIONE) AS TIPO_DESC
-            FROM {_table('TB_TIPI_MAT')}
-            GROUP BY COD_TIPO
-        )
         SELECT
-            a.COD_ARTICOLO                              AS cod_articolo,
-            ANY_VALUE(a.DESCRIZIONE)                    AS descrizione,
-            ANY_VALUE(a.COD_CATEG)                      AS cod_categ,
-            ANY_VALUE(c.COD_TIPO)                       AS cod_tipo,
-            ANY_VALUE(t.TIPO_DESC)                      AS tipo_desc,
-            ANY_VALUE(CAST(a.QTA_GIAC  AS FLOAT64))     AS qta_giac,
-            ANY_VALUE(CAST(a.RANK      AS FLOAT64))     AS rank,
-            ANY_VALUE(CAST(a.COEFF_A   AS FLOAT64))     AS coeff_a,
-            ANY_VALUE(CAST(a.COEFF_S   AS FLOAT64))     AS coeff_s,
-            ANY_VALUE(CAST(a.COEFF_B   AS FLOAT64))     AS coeff_b,
-            ANY_VALUE(CAST(a.QTA_STD_A AS FLOAT64))     AS qta_std_a,
-            ANY_VALUE(CAST(a.QTA_STD_S AS FLOAT64))     AS qta_std_s,
-            ANY_VALUE(CAST(a.QTA_STD_B AS FLOAT64))     AS qta_std_b,
-            ANY_VALUE(CAST(a.PERC_OSPITI AS FLOAT64))   AS perc_ospiti,
-            ANY_VALUE(CAST(a.PERC_IVA  AS FLOAT64))     AS perc_iva,
-            ANY_VALUE(a.FLG_QTA_TYPE)                   AS flg_qta_type
-        FROM {_table('ARTICOLI')} a
-        LEFT JOIN categ_dedup c ON c.COD_CATEG = a.COD_CATEG
-        LEFT JOIN tipo_dedup  t ON t.COD_TIPO  = c.COD_TIPO
+            a.cod_articolo,
+            a.descrizione,
+            a.cod_categ,
+            c.cod_tipo,
+            t.descrizione   AS tipo_desc,
+            a.qta_giac,
+            a.rank,
+            a.coeff_a,
+            a.coeff_s,
+            a.coeff_b,
+            a.qta_std_a,
+            a.qta_std_s,
+            a.qta_std_b,
+            a.perc_ospiti,
+            a.perc_iva,
+            a.flg_qta_type
+        FROM {_table('articoli')} a
+        LEFT JOIN {_table('tb_codici_categ')} c ON c.cod_categ = a.cod_categ
+        LEFT JOIN {_table('tb_tipi_mat')} t ON t.cod_tipo = c.cod_tipo
         {where}
-        GROUP BY a.COD_ARTICOLO
-        ORDER BY ANY_VALUE(c.COD_TIPO) NULLS LAST,
-                 ANY_VALUE(CAST(a.RANK AS FLOAT64)) NULLS LAST,
-                 a.COD_ARTICOLO
+        ORDER BY c.cod_tipo NULLS LAST, a.rank NULLS LAST, a.cod_articolo
     """, params)
     return rows
 
@@ -247,12 +223,12 @@ async def patch_articolo(cod_articolo: str, body: ArticoloPatch) -> dict:
     set_clauses: list[str] = []
     params: list = [bigquery.ScalarQueryParameter("cod", "STRING", cod_articolo)]
 
-    string_fields = [("descrizione", "DESCRIZIONE"), ("cod_categ", "COD_CATEG")]
+    string_fields = [("descrizione", "descrizione"), ("cod_categ", "cod_categ")]
     float_fields = [
-        ("qta_giac", "QTA_GIAC"), ("rank", "RANK"), ("coeff", "COEFF"),
-        ("coeff_a", "COEFF_A"), ("coeff_s", "COEFF_S"), ("coeff_b", "COEFF_B"),
-        ("qta_std_a", "QTA_STD_A"), ("qta_std_s", "QTA_STD_S"), ("qta_std_b", "QTA_STD_B"),
-        ("perc_ospiti", "PERC_OSPITI"), ("perc_iva", "PERC_IVA"),
+        ("qta_giac", "qta_giac"), ("rank", "rank"),
+        ("coeff_a", "coeff_a"), ("coeff_s", "coeff_s"), ("coeff_b", "coeff_b"),
+        ("qta_std_a", "qta_std_a"), ("qta_std_s", "qta_std_s"), ("qta_std_b", "qta_std_b"),
+        ("perc_ospiti", "perc_ospiti"), ("perc_iva", "perc_iva"),
     ]
 
     for fname, col in string_fields:
@@ -271,7 +247,7 @@ async def patch_articolo(cod_articolo: str, body: ArticoloPatch) -> dict:
         return {"updated": 0}
 
     affected = await dml(
-        f"UPDATE {_table('ARTICOLI')} SET {', '.join(set_clauses)} WHERE COD_ARTICOLO = @cod",
+        f"UPDATE {_table('articoli')} SET {', '.join(set_clauses)} WHERE cod_articolo = @cod",
         params,
     )
     if affected == 0:
@@ -286,25 +262,25 @@ async def create_articolo(body: ArticoloCreate) -> dict:
     """Crea un nuovo articolo."""
     cod = body.cod_articolo.strip().upper()
     existing = await query(
-        f"SELECT COUNT(*) AS cnt FROM {_table('ARTICOLI')} WHERE COD_ARTICOLO = @cod",
+        f"SELECT COUNT(*) AS cnt FROM {_table('articoli')} WHERE cod_articolo = @cod",
         [bigquery.ScalarQueryParameter("cod", "STRING", cod)],
     )
     if int(existing[0]["cnt"] or 0) > 0:
         raise HTTPException(409, f"Articolo {cod!r} già esistente")
-    await insert("ARTICOLI", {
-        "COD_ARTICOLO": cod,
-        "DESCRIZIONE":  body.descrizione,
-        "COD_CATEG":    body.cod_categ,
-        "QTA_GIAC":     body.qta_giac,
-        "RANK":         body.rank,
-        "COEFF_A":      body.coeff_a,
-        "COEFF_S":      body.coeff_s,
-        "COEFF_B":      body.coeff_b,
-        "QTA_STD_A":    body.qta_std_a,
-        "QTA_STD_S":    body.qta_std_s,
-        "QTA_STD_B":    body.qta_std_b,
-        "PERC_OSPITI":  body.perc_ospiti,
-        "PERC_IVA":     body.perc_iva,
+    await insert("articoli", {
+        "cod_articolo": cod,
+        "descrizione":  body.descrizione,
+        "cod_categ":    body.cod_categ,
+        "qta_giac":     body.qta_giac,
+        "rank":         body.rank,
+        "coeff_a":      body.coeff_a,
+        "coeff_s":      body.coeff_s,
+        "coeff_b":      body.coeff_b,
+        "qta_std_a":    body.qta_std_a,
+        "qta_std_s":    body.qta_std_s,
+        "qta_std_b":    body.qta_std_b,
+        "perc_ospiti":  body.perc_ospiti,
+        "perc_iva":     body.perc_iva,
     })
     invalidate_static()
     return {"created": cod}
@@ -323,28 +299,18 @@ class SezionePatch(BaseModel):
 async def list_sezioni_tabelle() -> list[dict]:
     """Tutte le sezioni merceologiche con conteggio articoli associati."""
     rows = await query(f"""
-        WITH tipo_dedup AS (
-            SELECT COD_TIPO,
-                   ANY_VALUE(DESCRIZIONE)             AS descrizione,
-                   ANY_VALUE(CAST(COD_STEP AS INT64)) AS cod_step
-            FROM {_table('TB_TIPI_MAT')}
-            GROUP BY COD_TIPO
-        ),
-        categ_dedup AS (
-            SELECT COD_CATEG, ANY_VALUE(COD_TIPO) AS COD_TIPO
-            FROM {_table('TB_CODICI_CATEG')}
-            GROUP BY COD_CATEG
-        ),
-        art_count AS (
-            SELECT c.COD_TIPO, COUNT(DISTINCT a.COD_ARTICOLO) AS n_articoli
-            FROM {_table('ARTICOLI')} a
-            JOIN categ_dedup c ON c.COD_CATEG = a.COD_CATEG
-            GROUP BY c.COD_TIPO
-        )
-        SELECT t.COD_TIPO AS cod_tipo, t.descrizione, t.cod_step,
-               COALESCE(ac.n_articoli, 0) AS n_articoli
-        FROM tipo_dedup t
-        LEFT JOIN art_count ac ON ac.COD_TIPO = t.COD_TIPO
+        SELECT
+            t.cod_tipo,
+            t.descrizione,
+            t.cod_step,
+            COALESCE(ac.n_articoli, 0) AS n_articoli
+        FROM {_table('tb_tipi_mat')} t
+        LEFT JOIN (
+            SELECT c.cod_tipo, COUNT(DISTINCT a.cod_articolo) AS n_articoli
+            FROM {_table('articoli')} a
+            JOIN {_table('tb_codici_categ')} c ON c.cod_categ = a.cod_categ
+            GROUP BY c.cod_tipo
+        ) ac ON ac.cod_tipo = t.cod_tipo
         ORDER BY t.cod_step
     """)
     return rows
@@ -357,17 +323,17 @@ async def patch_sezione(cod_tipo: str, body: SezionePatch) -> dict:
     params: list = [bigquery.ScalarQueryParameter("cod", "STRING", cod_tipo)]
 
     if body.descrizione is not None:
-        set_clauses.append("DESCRIZIONE = @desc")
+        set_clauses.append("descrizione = @desc")
         params.append(bigquery.ScalarQueryParameter("desc", "STRING", body.descrizione))
     if body.cod_step is not None:
-        set_clauses.append("COD_STEP = @step")
+        set_clauses.append("cod_step = @step")
         params.append(bigquery.ScalarQueryParameter("step", "INT64", body.cod_step))
 
     if not set_clauses:
         return {"updated": 0}
 
     affected = await dml(
-        f"UPDATE {_table('TB_TIPI_MAT')} SET {', '.join(set_clauses)} WHERE COD_TIPO = @cod",
+        f"UPDATE {_table('tb_tipi_mat')} SET {', '.join(set_clauses)} WHERE cod_tipo = @cod",
         params,
     )
     if affected == 0:
@@ -387,8 +353,7 @@ class TipoOspitePatch(BaseModel):
 @router.get("/tipi-ospiti")
 async def list_tipi_ospiti_tabelle() -> list[dict]:
     rows = await query(
-        f"SELECT COD_TIPO AS cod_tipo, ANY_VALUE(DESCRIZIONE) AS descrizione "
-        f"FROM {_table('TB_TIPI_OSPITI')} GROUP BY COD_TIPO ORDER BY COD_TIPO"
+        f"SELECT cod_tipo, descrizione FROM {_table('tb_tipi_ospiti')} ORDER BY cod_tipo"
     )
     return rows
 
@@ -398,7 +363,7 @@ async def patch_tipo_ospite(cod_tipo: str, body: TipoOspitePatch) -> dict:
     if body.descrizione is None:
         return {"updated": 0}
     affected = await dml(
-        f"UPDATE {_table('TB_TIPI_OSPITI')} SET DESCRIZIONE = @desc WHERE COD_TIPO = @cod",
+        f"UPDATE {_table('tb_tipi_ospiti')} SET descrizione = @desc WHERE cod_tipo = @cod",
         [
             bigquery.ScalarQueryParameter("desc", "STRING", body.descrizione),
             bigquery.ScalarQueryParameter("cod", "STRING", cod_tipo),

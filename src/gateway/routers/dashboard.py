@@ -15,31 +15,26 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 @router.get("/kpi")
 async def kpi() -> dict:
-    """Contatori: eventi attivi, liste di carico attive, totale articoli."""
     ev_q = query(f"""
         SELECT COUNT(*) AS cnt
-        FROM {_table('EVENTI')}
-        WHERE COALESCE(CAST(DELETED AS INT64), 0) = 0
-          AND COALESCE(CAST(IS_TEMPLATE AS INT64), 0) = 0
-          AND CAST(STATO AS INT64) != 900
-          AND SAFE_CAST(SUBSTR(DATA, 1, 10) AS DATE) >= CURRENT_DATE()
+        FROM {_table('eventi')}
+        WHERE COALESCE(deleted, FALSE) = FALSE
+          AND stato != 'annullato'
+          AND SAFE_CAST(data AS DATE) >= CURRENT_DATE()
     """)
     liste_q = query(f"""
-        SELECT COUNT(DISTINCT CAST(p.ID_EVENTO AS INT64)) AS cnt
-        FROM {_table('EVENTI_DET_PREL')} p
-        JOIN {_table('EVENTI')} e ON CAST(e.ID AS INT64) = CAST(p.ID_EVENTO AS INT64)
-        WHERE COALESCE(CAST(e.DELETED AS INT64), 0) = 0
-          AND CAST(e.STATO AS INT64) != 900
-          AND SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) >= CURRENT_DATE()
+        SELECT COUNT(DISTINCT p.id_evento) AS cnt
+        FROM {_table('eventi_det_prel')} p
+        JOIN {_table('eventi')} e ON e.id = p.id_evento
+        WHERE COALESCE(e.deleted, FALSE) = FALSE
+          AND e.stato != 'annullato'
+          AND SAFE_CAST(e.data AS DATE) >= CURRENT_DATE()
     """)
-    art_q = query(f"""
-        SELECT COUNT(*) AS cnt
-        FROM {_table('ARTICOLI')}
-    """)
+    art_q = query(f"SELECT COUNT(*) AS cnt FROM {_table('articoli')}")
     r_ev, r_liste, r_art = await asyncio.gather(ev_q, liste_q, art_q)
     return {
-        "eventi_attivi": int(r_ev[0]["cnt"] or 0),
-        "liste_aperte":  int(r_liste[0]["cnt"] or 0),
+        "eventi_attivi":   int(r_ev[0]["cnt"] or 0),
+        "liste_aperte":    int(r_liste[0]["cnt"] or 0),
         "articoli_totali": int(r_art[0]["cnt"] or 0),
     }
 
@@ -48,108 +43,81 @@ async def kpi() -> dict:
 
 @router.get("/prossimi-eventi")
 async def prossimi_eventi() -> list[dict]:
-    """Prossimi 5 eventi futuri, ordinati per data."""
-    rows = await query(f"""
-        WITH dedup AS (
-          SELECT *
-          FROM {_table('EVENTI')}
-          QUALIFY ROW_NUMBER() OVER (PARTITION BY CAST(ID AS INT64) ORDER BY CAST(ID AS INT64)) = 1
-        ),
-        loc_dedup AS (
-          SELECT CAST(ID AS INT64) AS id, ANY_VALUE(LOCATION) AS location
-          FROM {_table('LOCATION')}
-          WHERE ID IS NOT NULL
-          GROUP BY ID
-        )
+    return await query(f"""
         SELECT
-          CAST(e.ID AS INT64)          AS id,
-          e.DESCRIZIONE                AS descrizione,
-          SUBSTR(e.DATA, 1, 10)        AS data,
-          e.ORA_EVENTO                 AS ora_evento,
-          CAST(e.STATO AS INT64)       AS stato,
-          e.CLIENTE                    AS cliente,
-          l.location                   AS location_nome,
-          CAST(e.TOT_OSPITI AS INT64)  AS tot_ospiti
-        FROM dedup e
-        LEFT JOIN loc_dedup l ON l.id = CAST(e.ID_LOCATION AS INT64)
-        WHERE COALESCE(CAST(e.DELETED AS INT64), 0) = 0
-          AND COALESCE(CAST(e.IS_TEMPLATE AS INT64), 0) = 0
-          AND CAST(e.STATO AS INT64) != 900
-          AND SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) >= CURRENT_DATE()
-        ORDER BY SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) ASC
+          e.id,
+          e.descrizione,
+          e.data,
+          e.ora_evento,
+          e.stato,
+          c.nome                                                       AS cliente,
+          l.nome                                                       AS location_nome,
+          COALESCE(e.n_adulti,0) + COALESCE(e.n_bambini,0)
+            + COALESCE(e.n_fornitori,0) + COALESCE(e.n_altri,0)       AS tot_ospiti
+        FROM {_table('eventi')} e
+        LEFT JOIN {_table('location')} l ON l.id = e.id_location
+        LEFT JOIN {_table('clienti')} c ON c.id = e.id_cliente
+        WHERE COALESCE(e.deleted, FALSE) = FALSE
+          AND e.stato != 'annullato'
+          AND SAFE_CAST(e.data AS DATE) >= CURRENT_DATE()
+        ORDER BY SAFE_CAST(e.data AS DATE) ASC
         LIMIT 5
     """)
-    return rows
 
 
 # ── LISTE APERTE ───────────────────────────────────────────────────────────────
 
 @router.get("/liste-aperte")
 async def liste_aperte() -> list[dict]:
-    """Ultimi 5 eventi con lista di carico attiva (stato confermato, data >= oggi)."""
-    rows = await query(f"""
-        WITH dedup AS (
-          SELECT *
-          FROM {_table('EVENTI')}
-          QUALIFY ROW_NUMBER() OVER (PARTITION BY CAST(ID AS INT64) ORDER BY CAST(ID AS INT64)) = 1
-        ),
-        loc_dedup AS (
-          SELECT CAST(ID AS INT64) AS id, ANY_VALUE(LOCATION) AS location
-          FROM {_table('LOCATION')}
-          WHERE ID IS NOT NULL
-          GROUP BY ID
-        ),
-        eventi_con_lista AS (
-          SELECT DISTINCT CAST(ID_EVENTO AS INT64) AS id_evento
-          FROM {_table('EVENTI_DET_PREL')}
+    return await query(f"""
+        WITH eventi_con_lista AS (
+          SELECT DISTINCT id_evento
+          FROM {_table('eventi_det_prel')}
         )
         SELECT
-          CAST(e.ID AS INT64)          AS id,
-          e.DESCRIZIONE                AS descrizione,
-          SUBSTR(e.DATA, 1, 10)        AS data,
-          CAST(e.STATO AS INT64)       AS stato,
-          e.CLIENTE                    AS cliente,
-          l.location                   AS location_nome,
-          CAST(e.TOT_OSPITI AS INT64)  AS tot_ospiti
-        FROM dedup e
-        JOIN eventi_con_lista ecl ON ecl.id_evento = CAST(e.ID AS INT64)
-        LEFT JOIN loc_dedup l ON l.id = CAST(e.ID_LOCATION AS INT64)
-        WHERE COALESCE(CAST(e.DELETED AS INT64), 0) = 0
-          AND COALESCE(CAST(e.IS_TEMPLATE AS INT64), 0) = 0
-          AND CAST(e.STATO AS INT64) != 900
-          AND SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) >= CURRENT_DATE()
-        ORDER BY SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) ASC
+          e.id,
+          e.descrizione,
+          e.data,
+          e.stato,
+          c.nome                                                       AS cliente,
+          l.nome                                                       AS location_nome,
+          COALESCE(e.n_adulti,0) + COALESCE(e.n_bambini,0)
+            + COALESCE(e.n_fornitori,0) + COALESCE(e.n_altri,0)       AS tot_ospiti
+        FROM {_table('eventi')} e
+        JOIN eventi_con_lista ecl ON ecl.id_evento = e.id
+        LEFT JOIN {_table('location')} l ON l.id = e.id_location
+        LEFT JOIN {_table('clienti')} c ON c.id = e.id_cliente
+        WHERE COALESCE(e.deleted, FALSE) = FALSE
+          AND e.stato != 'annullato'
+          AND SAFE_CAST(e.data AS DATE) >= CURRENT_DATE()
+        ORDER BY SAFE_CAST(e.data AS DATE) ASC
         LIMIT 5
     """)
-    return rows
 
 
 # ── CARICO DI LAVORO ───────────────────────────────────────────────────────────
 
 @router.get("/carico-lavoro")
 async def carico_lavoro() -> list[dict]:
-    """Conteggio eventi per settimana (prossime 8 settimane), raggruppati per stato."""
     rows = await query(f"""
         SELECT
-          FORMAT_DATE('%G-W%V', SAFE_CAST(SUBSTR(DATA, 1, 10) AS DATE)) AS settimana,
-          CASE
-            WHEN CAST(STATO AS INT64) = 100 THEN 'preventivo'
-            WHEN CAST(STATO AS INT64) IN (200, 300, 350) THEN 'in_lavorazione'
-            WHEN CAST(STATO AS INT64) = 400 THEN 'confermato'
+          FORMAT_DATE('%G-W%V', SAFE_CAST(data AS DATE)) AS settimana,
+          CASE stato
+            WHEN 'in_attesa_conferma' THEN 'preventivo'
+            WHEN 'in_lavorazione'     THEN 'in_lavorazione'
+            WHEN 'confermato'         THEN 'confermato'
             ELSE 'altro'
           END AS stato_gruppo,
           COUNT(*) AS cnt
-        FROM {_table('EVENTI')}
-        WHERE COALESCE(CAST(DELETED AS INT64), 0) = 0
-          AND COALESCE(CAST(IS_TEMPLATE AS INT64), 0) = 0
-          AND CAST(STATO AS INT64) != 900
-          AND SAFE_CAST(SUBSTR(DATA, 1, 10) AS DATE) >= CURRENT_DATE()
-          AND SAFE_CAST(SUBSTR(DATA, 1, 10) AS DATE) < DATE_ADD(CURRENT_DATE(), INTERVAL 8 WEEK)
+        FROM {_table('eventi')}
+        WHERE COALESCE(deleted, FALSE) = FALSE
+          AND stato != 'annullato'
+          AND SAFE_CAST(data AS DATE) >= CURRENT_DATE()
+          AND SAFE_CAST(data AS DATE) < DATE_ADD(CURRENT_DATE(), INTERVAL 8 WEEK)
         GROUP BY settimana, stato_gruppo
         ORDER BY settimana
     """)
 
-    # Pivot: settimana → { preventivo, in_lavorazione, confermato }
     settimane: dict[str, dict] = {}
     for r in rows:
         s = r["settimana"]
@@ -158,7 +126,6 @@ async def carico_lavoro() -> list[dict]:
         sg = r["stato_gruppo"]
         if sg in settimane[s]:
             settimane[s][sg] += int(r["cnt"] or 0)
-
     return list(settimane.values())
 
 
@@ -169,90 +136,75 @@ async def articoli_sotto_scorta(
     giorni: int | None = None,
     data: str | None = None,
 ) -> list[dict]:
-    """Articoli impegnati >50% della giacenza.
-
-    - `data` (YYYY-MM-DD): filtra solo gli eventi di quel giorno.
-    - `giorni` (int): finestra in giorni da oggi (default 30).
-    """
-    from fastapi import Query as Q
-
     if data:
-        date_filter = "SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) = @data_filter"
+        date_filter = "SAFE_CAST(e.data AS DATE) = @data_filter"
         params = [bigquery.ScalarQueryParameter("data_filter", "DATE", data)]
     else:
         n = giorni if giorni and giorni > 0 else 30
         date_filter = (
-            "SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) >= CURRENT_DATE() "
-            "AND SAFE_CAST(SUBSTR(e.DATA, 1, 10) AS DATE) < DATE_ADD(CURRENT_DATE(), INTERVAL @giorni DAY)"
+            "SAFE_CAST(e.data AS DATE) >= CURRENT_DATE() "
+            "AND SAFE_CAST(e.data AS DATE) < DATE_ADD(CURRENT_DATE(), INTERVAL @giorni DAY)"
         )
         params = [bigquery.ScalarQueryParameter("giorni", "INT64", n)]
 
-    rows = await query(f"""
+    return await query(f"""
         WITH impegni AS (
-          SELECT
-            p.COD_ARTICOLO,
-            SUM(CAST(p.QTA AS FLOAT64)) AS qta_impegnata
-          FROM {_table('EVENTI_DET_PREL')} p
-          JOIN {_table('EVENTI')} e ON CAST(e.ID AS INT64) = CAST(p.ID_EVENTO AS INT64)
-          WHERE COALESCE(CAST(e.DELETED AS INT64), 0) = 0
-            AND CAST(e.STATO AS INT64) != 900
+          SELECT p.cod_articolo, SUM(p.qta) AS qta_impegnata
+          FROM {_table('eventi_det_prel')} p
+          JOIN {_table('eventi')} e ON e.id = p.id_evento
+          WHERE COALESCE(e.deleted, FALSE) = FALSE
+            AND e.stato != 'annullato'
             AND {date_filter}
-          GROUP BY p.COD_ARTICOLO
+          GROUP BY p.cod_articolo
         )
         SELECT
-          a.COD_ARTICOLO                                AS cod_articolo,
-          a.DESCRIZIONE                                 AS descrizione,
-          CAST(a.QTA_GIAC AS FLOAT64)                   AS qta_giac,
-          COALESCE(i.qta_impegnata, 0)                  AS qta_impegnata,
-          ROUND(COALESCE(i.qta_impegnata, 0) / CAST(a.QTA_GIAC AS FLOAT64) * 100, 1) AS perc_impegnata
-        FROM {_table('ARTICOLI')} a
-        LEFT JOIN impegni i ON i.COD_ARTICOLO = a.COD_ARTICOLO
-        WHERE CAST(a.QTA_GIAC AS FLOAT64) > 0
-          AND CAST(a.QTA_GIAC AS FLOAT64) != 9999
-          AND COALESCE(i.qta_impegnata, 0) / CAST(a.QTA_GIAC AS FLOAT64) > 0.5
+          a.cod_articolo,
+          a.descrizione,
+          a.qta_giac,
+          COALESCE(i.qta_impegnata, 0)                                           AS qta_impegnata,
+          ROUND(COALESCE(i.qta_impegnata, 0) / a.qta_giac * 100, 1)             AS perc_impegnata
+        FROM {_table('articoli')} a
+        LEFT JOIN impegni i ON i.cod_articolo = a.cod_articolo
+        WHERE a.qta_giac > 0
+          AND a.qta_giac != 9999
+          AND COALESCE(i.qta_impegnata, 0) / a.qta_giac > 0.5
         ORDER BY perc_impegnata DESC
         LIMIT 20
     """, params)
-    return rows
 
 
 # ── ATTIVITÀ RECENTI ───────────────────────────────────────────────────────────
 
 @router.get("/attivita-recenti")
 async def attivita_recenti() -> list[dict]:
-    """Ultime attività: nuovi eventi + acconti recenti, ordinati per data desc."""
     ev_q = query(f"""
-        WITH dedup AS (
-          SELECT *
-          FROM {_table('EVENTI')}
-          QUALIFY ROW_NUMBER() OVER (PARTITION BY CAST(ID AS INT64) ORDER BY CAST(ID AS INT64)) = 1
-        )
         SELECT
-          CAST(ID AS INT64)  AS id,
-          'evento'           AS tipo,
-          DESCRIZIONE        AS descrizione,
-          CLIENTE            AS cliente,
-          SUBSTR(DATA, 1, 10) AS data,
-          CAST(STATO AS INT64) AS stato
-        FROM dedup
-        WHERE COALESCE(CAST(DELETED AS INT64), 0) = 0
-          AND COALESCE(CAST(IS_TEMPLATE AS INT64), 0) = 0
-        ORDER BY CAST(ID AS INT64) DESC
+          e.id,
+          'evento'    AS tipo,
+          e.descrizione,
+          c.nome      AS cliente,
+          e.data,
+          e.stato
+        FROM {_table('eventi')} e
+        LEFT JOIN {_table('clienti')} c ON c.id = e.id_cliente
+        WHERE COALESCE(e.deleted, FALSE) = FALSE
+        ORDER BY e.id DESC
         LIMIT 6
     """)
     acc_q = query(f"""
         SELECT
-          CAST(a.ID AS INT64)         AS id,
-          'acconto'                   AS tipo,
-          CAST(a.ID_EVENTO AS INT64)  AS id_evento,
-          CAST(a.ACCONTO AS FLOAT64)  AS importo,
-          SUBSTR(CAST(a.DATA AS STRING), 1, 10) AS data,
-          e.DESCRIZIONE               AS descrizione,
-          e.CLIENTE                   AS cliente
-        FROM {_table('EVENTI_ACCONTI')} a
-        JOIN {_table('EVENTI')} e ON CAST(e.ID AS INT64) = CAST(a.ID_EVENTO AS INT64)
-        WHERE COALESCE(CAST(e.DELETED AS INT64), 0) = 0
-        ORDER BY CAST(a.ID AS INT64) DESC
+          a.id,
+          'acconto'           AS tipo,
+          a.id_evento,
+          a.importo,
+          a.data_scadenza     AS data,
+          e.descrizione,
+          c.nome              AS cliente
+        FROM {_table('evento_acconti')} a
+        JOIN {_table('eventi')} e ON e.id = a.id_evento
+        LEFT JOIN {_table('clienti')} c ON c.id = e.id_cliente
+        WHERE COALESCE(e.deleted, FALSE) = FALSE
+        ORDER BY a.id DESC
         LIMIT 4
     """)
     r_ev, r_acc = await asyncio.gather(ev_q, acc_q)
@@ -263,6 +215,5 @@ async def attivita_recenti() -> list[dict]:
     for r in r_acc:
         combined.append({"tipo": "acconto", **r})
 
-    # Sort by data desc (date string lexicographic is fine for ISO dates)
     combined.sort(key=lambda x: x.get("data") or "", reverse=True)
     return combined[:10]
