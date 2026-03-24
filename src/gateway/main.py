@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pythonjsonlogger import jsonlogger
 
 from config.settings import get_settings
@@ -50,6 +51,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def no_cache(request: Request, call_next: object) -> Response:
+    """Impedisce al browser/proxy di mettere in cache le risposte API."""
+    response: Response = await call_next(request)  # type: ignore[arg-type]
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 app.include_router(dashboard_router)
 app.include_router(eventi_router)
