@@ -37,12 +37,54 @@ async def _check_confermato(id_evento: int) -> None:
         raise HTTPException(403, "La lista di carico è accessibile solo per eventi confermati")
 
 
+async def _get_event_context(id_evento: int) -> dict:
+    rows = await query(
+        f"""SELECT
+              data,
+              n_adulti,
+              COALESCE(n_adulti,0) + COALESCE(n_bambini,0)
+                + COALESCE(n_fornitori,0) + COALESCE(n_altri,0) AS tot_ospiti,
+              perc_sedute_aper
+            FROM {_table('eventi')}
+            WHERE id = @id LIMIT 1""",
+        [bigquery.ScalarQueryParameter("id", "INT64", id_evento)],
+    )
+    return rows[0] if rows else {}
+
+
+async def _get_prezzo_articolo_per_evento(cod_articolo: str, data_evento: str | None) -> float | None:
+    params = [
+        bigquery.ScalarQueryParameter("cod_articolo", "STRING", cod_articolo),
+        bigquery.ScalarQueryParameter("data_evento", "DATE", data_evento),
+    ]
+    rows = await query(
+        f"""
+        SELECT prezzo_netto
+        FROM {_table('prezzi_listino')}
+        WHERE cod_articolo = @cod_articolo
+          AND prezzo_netto IS NOT NULL
+          AND (
+            @data_evento IS NULL OR (
+              (SAFE_CAST(valido_dal AS DATE) IS NULL OR SAFE_CAST(valido_dal AS DATE) <= @data_evento)
+              AND (SAFE_CAST(valido_al AS DATE) IS NULL OR SAFE_CAST(valido_al AS DATE) >= @data_evento)
+            )
+          )
+        ORDER BY SAFE_CAST(valido_dal AS DATE) DESC NULLS LAST
+        LIMIT 1
+        """,
+        params,
+    )
+    if not rows:
+        return None
+    return float(rows[0]["prezzo_netto"]) if rows[0].get("prezzo_netto") is not None else None
+
+
 def _item_to_response(item: CachedItem) -> ListaCaricaItem:
     return ListaCaricaItem(
         id=item.id,
         cod_articolo=item.cod_articolo,
         descrizione=item.descrizione,
-        qta=item.qta,
+        qta=item.total_qta(),
         qta_ape=item.qta_ape,
         qta_sedu=item.qta_sedu,
         qta_bufdol=item.qta_bufdol,
@@ -81,37 +123,33 @@ async def add_articolo(id_evento: int, body: AddArticoloRequest) -> ListaCaricaI
     if art is None:
         raise HTTPException(404, f"Articolo '{body.cod_articolo}' non trovato")
 
-    # Recupera ospiti dall'evento per calcolare quantità
-    evt_rows = await query(
-        f"""SELECT
-              COALESCE(n_adulti,0) + COALESCE(n_bambini,0)
-                + COALESCE(n_fornitori,0) + COALESCE(n_altri,0) AS tot_ospiti,
-              perc_sedute_aper
-            FROM {_table('eventi')}
-            WHERE id = @id LIMIT 1""",
-        [bigquery.ScalarQueryParameter("id", "INT64", id_evento)],
-    )
-    evt = evt_rows[0] if evt_rows else {}
-    ospiti = distribuzione_ospiti(evt.get("tot_ospiti"), evt.get("perc_sedute_aper"))
+    evt = await _get_event_context(id_evento)
+    ospiti = distribuzione_ospiti(evt.get("tot_ospiti"), evt.get("perc_sedute_aper"), evt.get("n_adulti"))
     q = calcola_qta(art, ospiti)
+    costo_articolo = await _get_prezzo_articolo_per_evento(body.cod_articolo, evt.get("data"))
 
     enrich = static.enrich(body.cod_articolo)
     cache  = await get_lista_cache(id_evento)
+    qta_man_ape = float(body.qta_man_ape)
+    qta_man_sedu = float(body.qta_man_sedu)
+    qta_man_bufdol = float(body.qta_man_bufdol)
 
     item = CachedItem(
         id=cache.next_temp_id(),
         cod_articolo=body.cod_articolo,
         descrizione=enrich["descrizione"],
-        qta=1,
+        qta=q["qta_ape"] + q["qta_sedu"] + q["qta_bufdol"] + qta_man_ape + qta_man_sedu + qta_man_bufdol,
         qta_ape=q["qta_ape"],
         qta_sedu=q["qta_sedu"],
         qta_bufdol=q["qta_bufdol"],
-        qta_man_ape=float(body.qta_man_ape),
-        qta_man_sedu=float(body.qta_man_sedu),
-        qta_man_bufdol=float(body.qta_man_bufdol),
+        qta_man_ape=qta_man_ape,
+        qta_man_sedu=qta_man_sedu,
+        qta_man_bufdol=qta_man_bufdol,
         note=body.note,
         colore=None,
         dimensioni=None,
+        costo_articolo=costo_articolo,
+        perc_ospiti=None,
         ordine=cache.next_ordine(),
         cod_tipo=enrich["cod_tipo"],
         tipo_descrizione=enrich["tipo_descrizione"],
@@ -128,6 +166,10 @@ async def add_articolo(id_evento: int, body: AddArticoloRequest) -> ListaCaricaI
 async def update_articolo(id_evento: int, item_id: int, body: UpdateListaItemRequest) -> dict:
     """Aggiorna un articolo nella cache (non scrive su BQ)."""
     cache = await get_lista_cache(id_evento)
+    current = cache.get(item_id)
+    if current is None:
+        raise HTTPException(404, "Articolo non trovato nella lista")
+
     changes: dict = {
         "qta_man_ape":    float(body.qta_man_ape),
         "qta_man_sedu":   float(body.qta_man_sedu),
@@ -139,10 +181,19 @@ async def update_articolo(id_evento: int, item_id: int, body: UpdateListaItemReq
     if body.qta_ape    is not None: changes["qta_ape"]    = float(body.qta_ape)
     if body.qta_sedu   is not None: changes["qta_sedu"]   = float(body.qta_sedu)
     if body.qta_bufdol is not None: changes["qta_bufdol"] = float(body.qta_bufdol)
+    qta_ape = float(changes.get("qta_ape", current.qta_ape))
+    qta_sedu = float(changes.get("qta_sedu", current.qta_sedu))
+    qta_bufdol = float(changes.get("qta_bufdol", current.qta_bufdol))
+    changes["qta"] = (
+        qta_ape
+        + qta_sedu
+        + qta_bufdol
+        + float(changes["qta_man_ape"])
+        + float(changes["qta_man_sedu"])
+        + float(changes["qta_man_bufdol"])
+    )
 
     item = cache.update_item(item_id, **changes)
-    if item is None:
-        raise HTTPException(404, "Articolo non trovato nella lista")
     return {"updated": item_id}
 
 
@@ -166,17 +217,8 @@ async def recalcola_lista(id_evento: int) -> dict:
     await _check_confermato(id_evento)
 
     static = await get_static()
-    evt_rows = await query(
-        f"""SELECT
-              COALESCE(n_adulti,0) + COALESCE(n_bambini,0)
-                + COALESCE(n_fornitori,0) + COALESCE(n_altri,0) AS tot_ospiti,
-              perc_sedute_aper
-            FROM {_table('eventi')}
-            WHERE id = @id LIMIT 1""",
-        [bigquery.ScalarQueryParameter("id", "INT64", id_evento)],
-    )
-    evt    = evt_rows[0] if evt_rows else {}
-    ospiti = distribuzione_ospiti(evt.get("tot_ospiti"), evt.get("perc_sedute_aper"))
+    evt = await _get_event_context(id_evento)
+    ospiti = distribuzione_ospiti(evt.get("tot_ospiti"), evt.get("perc_sedute_aper"), evt.get("n_adulti"))
 
     cache   = await get_lista_cache(id_evento)
     updated = cache.recalcola(static, ospiti)

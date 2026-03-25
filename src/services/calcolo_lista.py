@@ -18,6 +18,7 @@ from google.cloud import bigquery
 
 @dataclass
 class OspitiCounts:
+    adulti: float = 0
     aperitivo: float = 0
     seduto: float = 0
     buffet_dolci: float = 0
@@ -31,6 +32,7 @@ async def get_ospiti(id_evento: int) -> OspitiCounts:
     """Distribuzione ospiti per servizio dall'evento (tot_ospiti + perc_sedute_aper)."""
     rows = await query(f"""
         SELECT
+          n_adulti,
           COALESCE(n_adulti,0) + COALESCE(n_bambini,0)
             + COALESCE(n_fornitori,0) + COALESCE(n_altri,0) AS tot_ospiti,
           perc_sedute_aper
@@ -45,36 +47,43 @@ async def get_ospiti(id_evento: int) -> OspitiCounts:
 
     e = rows[0]
     tot = float(e.get("tot_ospiti") or 0)
+    adulti = float(e.get("n_adulti") or 0)
     perc_aper = float(e.get("perc_sedute_aper") or 0) / 100.0
     n_aper = round(tot * perc_aper) if perc_aper else 0
     n_sedu = tot - n_aper
 
-    return OspitiCounts(aperitivo=n_aper, seduto=n_sedu, buffet_dolci=0)
+    return OspitiCounts(adulti=adulti, aperitivo=n_aper, seduto=n_sedu, buffet_dolci=0)
 
 
 def calcola_qta(articolo: dict, ospiti: OspitiCounts) -> dict[str, float]:
     """Calcola qta_ape, qta_sedu, qta_bufdol in base al flg_qta_type.
 
-    Nota: il DB Oracle mostra che sia 'S' che 'C' usano COEFF × ospiti.
-    La differenza tra 'S' e 'C' non è nel calcolo ma nell'origine del coefficiente
-    (standard vs configurato). Entrambi usano coeff_a/s/b × n_ospiti.
-    Se il coefficiente è 0 e qta_std è impostato si usa qta_std come fallback.
+    Allineato alla documentazione ingestion_data:
+    - S: quantità fisse da qta_std_*
+    - C: coefficienti × ospiti per fase
+    - P: percentuale sugli adulti
     """
-    flg = (articolo.get("flg_qta_type") or "S").upper()
+    flg = (articolo.get("flg_qta_type") or "").upper()
 
-    if flg in ("S", "C"):
+    if flg == "S":
+        return {
+            "qta_ape": float(articolo.get("qta_std_a") or 0),
+            "qta_sedu": float(articolo.get("qta_std_s") or 0),
+            "qta_bufdol": float(articolo.get("qta_std_b") or 0),
+        }
+
+    if flg == "C":
         coeff_a = float(articolo.get("coeff_a") or 0)
         coeff_s = float(articolo.get("coeff_s") or 0)
         coeff_b = float(articolo.get("coeff_b") or 0)
-        # Fallback a qta_std solo se COEFF è zero
-        qta_a = ospiti.aperitivo    * coeff_a if coeff_a else float(articolo.get("qta_std_a") or 0)
-        qta_s = ospiti.seduto       * coeff_s if coeff_s else float(articolo.get("qta_std_s") or 0)
-        qta_b = ospiti.buffet_dolci * coeff_b if coeff_b else float(articolo.get("qta_std_b") or 0)
+        qta_a = ospiti.aperitivo * coeff_a
+        qta_s = ospiti.seduto * coeff_s
+        qta_b = ospiti.buffet_dolci * coeff_b
         return {"qta_ape": round(qta_a, 1), "qta_sedu": round(qta_s, 1), "qta_bufdol": round(qta_b, 1)}
 
     if flg == "P":
         perc = float(articolo.get("perc_ospiti") or 100) / 100.0
-        totale = round(ospiti.totale * perc)
+        totale = round(ospiti.adulti * perc)
         return {"qta_ape": totale, "qta_sedu": 0, "qta_bufdol": 0}
 
     return {"qta_ape": 0, "qta_sedu": 0, "qta_bufdol": 0}

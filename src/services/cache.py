@@ -37,6 +37,7 @@ _OSPITI_MAP: dict[str, str] = {
 
 @dataclass
 class OspitiCounts:
+    adulti: float = 0
     aperitivo: float = 0
     seduto: float = 0
     buffet_dolci: float = 0
@@ -46,12 +47,17 @@ class OspitiCounts:
         return self.aperitivo + self.seduto + self.buffet_dolci
 
 
-def distribuzione_ospiti(tot_ospiti: int | None, perc_sedute_aper: float | None) -> OspitiCounts:
+def distribuzione_ospiti(
+    tot_ospiti: int | None,
+    perc_sedute_aper: float | None,
+    n_adulti: int | None = None,
+) -> OspitiCounts:
     """Calcola distribuzione ospiti da tot_ospiti + perc — puro Python, no BQ."""
     tot = float(tot_ospiti or 0)
+    adulti = float(n_adulti or 0)
     perc = float(perc_sedute_aper or 0) / 100.0
     n_ape = round(tot * perc) if perc else 0
-    return OspitiCounts(aperitivo=n_ape, seduto=tot - n_ape, buffet_dolci=0)
+    return OspitiCounts(adulti=adulti, aperitivo=n_ape, seduto=tot - n_ape, buffet_dolci=0)
 
 
 # ── Calcolo quantità — puro Python ────────────────────────────────────────────
@@ -59,23 +65,31 @@ def distribuzione_ospiti(tot_ospiti: int | None, perc_sedute_aper: float | None)
 def calcola_qta(articolo: dict[str, Any], ospiti: OspitiCounts) -> dict[str, float]:
     """Calcola QTA_APE/SEDU/BUFDOL per un articolo.
 
-    'S' e 'C': COEFF × n_ospiti (fallback a QTA_STD se COEFF = 0).
-    'P': totale × PERC_OSPITI / 100.
+    Allineato alla semantica documentata in ingestion_data:
+    - 'S': usa i valori fissi qta_std_*
+    - 'C': coeff_* × n_ospiti per fase
+    - 'P': adulti × perc_ospiti / 100
     """
-    flg = (articolo.get("flg_qta_type") or "S").upper()
+    flg = (articolo.get("flg_qta_type") or "").upper()
 
-    if flg in ("S", "C"):
+    if flg == "S":
+        qa = float(articolo.get("qta_std_a") or 0)
+        qs = float(articolo.get("qta_std_s") or 0)
+        qb = float(articolo.get("qta_std_b") or 0)
+        return {"qta_ape": qa, "qta_sedu": qs, "qta_bufdol": qb}
+
+    if flg == "C":
         ca = float(articolo.get("coeff_a") or 0)
         cs = float(articolo.get("coeff_s") or 0)
         cb = float(articolo.get("coeff_b") or 0)
-        qa = round(ospiti.aperitivo    * ca, 1) if ca else float(articolo.get("qta_std_a") or 0)
-        qs = round(ospiti.seduto       * cs, 1) if cs else float(articolo.get("qta_std_s") or 0)
-        qb = round(ospiti.buffet_dolci * cb, 1) if cb else float(articolo.get("qta_std_b") or 0)
+        qa = round(ospiti.aperitivo * ca, 1)
+        qs = round(ospiti.seduto * cs, 1)
+        qb = round(ospiti.buffet_dolci * cb, 1)
         return {"qta_ape": qa, "qta_sedu": qs, "qta_bufdol": qb}
 
     if flg == "P":
         perc = float(articolo.get("perc_ospiti") or 100) / 100.0
-        totale = round(ospiti.totale * perc)
+        totale = round(ospiti.adulti * perc)
         return {"qta_ape": totale, "qta_sedu": 0.0, "qta_bufdol": 0.0}
 
     return {"qta_ape": 0.0, "qta_sedu": 0.0, "qta_bufdol": 0.0}
@@ -184,11 +198,19 @@ class CachedItem:
     note: str | None
     colore: str | None
     dimensioni: str | None
+    costo_articolo: float | None
+    perc_ospiti: float | None
     ordine: int
     cod_tipo: str | None
     tipo_descrizione: str | None
     cod_step: int
     is_new: bool = False  # non ancora su BQ
+
+    def total_qta(self) -> float:
+        return (
+            self.qta_ape + self.qta_sedu + self.qta_bufdol
+            + self.qta_man_ape + self.qta_man_sedu + self.qta_man_bufdol
+        )
 
 
 @dataclass
@@ -240,10 +262,14 @@ class ListaCache:
             art = static.get_articolo(item.cod_articolo)
             if art is None:
                 continue
-            q = calcola_qta(art, ospiti)
+            art_for_calc = dict(art)
+            if item.perc_ospiti is not None:
+                art_for_calc["perc_ospiti"] = item.perc_ospiti
+            q = calcola_qta(art_for_calc, ospiti)
             item.qta_ape    = q["qta_ape"]
             item.qta_sedu   = q["qta_sedu"]
             item.qta_bufdol = q["qta_bufdol"]
+            item.qta        = item.total_qta()
             updated += 1
         if updated:
             self.dirty = True
@@ -323,13 +349,15 @@ async def save_lista_to_bq(id_evento: int) -> int:
                 "id_evento":      id_evento,
                 "id":             item.id,
                 "cod_articolo":   item.cod_articolo,
-                "qta":            item.qta,
+                "qta":            item.total_qta(),
                 "qta_ape":        item.qta_ape,
                 "qta_sedu":       item.qta_sedu,
                 "qta_bufdol":     item.qta_bufdol,
                 "qta_man_ape":    item.qta_man_ape,
                 "qta_man_sedu":   item.qta_man_sedu,
                 "qta_man_bufdol": item.qta_man_bufdol,
+                "costo_articolo": item.costo_articolo,
+                "perc_ospiti":    item.perc_ospiti,
                 "note":           item.note or "",
                 "colore":         item.colore or "",
                 "dimensioni":     item.dimensioni or "",
@@ -368,6 +396,7 @@ async def _load_lista_from_bq(id_evento: int) -> ListaCache:
         """, param),
         query(f"""
             SELECT
+              n_adulti,
               COALESCE(n_adulti,0) + COALESCE(n_bambini,0)
                 + COALESCE(n_fornitori,0) + COALESCE(n_altri,0) AS tot_ospiti,
               perc_sedute_aper
@@ -384,6 +413,7 @@ async def _load_lista_from_bq(id_evento: int) -> ListaCache:
     ospiti = distribuzione_ospiti(
         tot_ospiti=evt.get("tot_ospiti"),
         perc_sedute_aper=evt.get("perc_sedute_aper"),
+        n_adulti=evt.get("n_adulti"),
     )
 
     items: list[CachedItem] = []
@@ -394,24 +424,33 @@ async def _load_lista_from_bq(id_evento: int) -> ListaCache:
 
         # Ricalcola quantità automatiche da articoli × ospiti
         if art:
-            q = calcola_qta(art, ospiti)
+            art_for_calc = dict(art)
+            if r.get("perc_ospiti") is not None:
+                art_for_calc["perc_ospiti"] = r.get("perc_ospiti")
+            q = calcola_qta(art_for_calc, ospiti)
         else:
             q = {"qta_ape": 0.0, "qta_sedu": 0.0, "qta_bufdol": 0.0}
+
+        qta_man_ape = float(r.get("qta_man_ape") or 0)
+        qta_man_sedu = float(r.get("qta_man_sedu") or 0)
+        qta_man_bufdol = float(r.get("qta_man_bufdol") or 0)
 
         items.append(CachedItem(
             id=int(r["id"]),
             cod_articolo=cod,
             descrizione=enrich["descrizione"],
-            qta=float(r.get("qta") or 0),
+            qta=q["qta_ape"] + q["qta_sedu"] + q["qta_bufdol"] + qta_man_ape + qta_man_sedu + qta_man_bufdol,
             qta_ape=q["qta_ape"],
             qta_sedu=q["qta_sedu"],
             qta_bufdol=q["qta_bufdol"],
-            qta_man_ape=float(r.get("qta_man_ape") or 0),
-            qta_man_sedu=float(r.get("qta_man_sedu") or 0),
-            qta_man_bufdol=float(r.get("qta_man_bufdol") or 0),
+            qta_man_ape=qta_man_ape,
+            qta_man_sedu=qta_man_sedu,
+            qta_man_bufdol=qta_man_bufdol,
             note=r.get("note") or None,
             colore=r.get("colore") or None,
             dimensioni=r.get("dimensioni") or None,
+            costo_articolo=float(r["costo_articolo"]) if r.get("costo_articolo") is not None else None,
+            perc_ospiti=float(r["perc_ospiti"]) if r.get("perc_ospiti") is not None else None,
             ordine=int(r.get("ordine") or 0),
             cod_tipo=enrich["cod_tipo"],
             tipo_descrizione=enrich["tipo_descrizione"],
@@ -691,11 +730,10 @@ def calcola_preventivo(
     articoli_lista = []
     if lista is not None:
         for item in lista.items:
-            costo_uni = static.costi_articoli.get(item.cod_articolo, 0.0)
-            qta = (
-                item.qta_ape + item.qta_sedu + item.qta_bufdol
-                + item.qta_man_ape + item.qta_man_sedu + item.qta_man_bufdol
-            )
+            costo_uni = item.costo_articolo
+            if costo_uni is None:
+                costo_uni = static.costi_articoli.get(item.cod_articolo, 0.0)
+            qta = item.total_qta()
             subtotale = costo_uni * qta
             articoli_subtotale += subtotale
             if costo_uni > 0:
